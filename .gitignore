@@ -1,0 +1,74 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments and secrets
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# Triton build/cache artifacts
+.triton/
+*.cubin
+*.ptx
+
+# Local documentation
+docs/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Experiment outputs
+logs/*
+!logs/.gitkeep
+figs/*
+!figs/.gitkeep
+tables/*
+!tables/.gitkeep
+results/*
+!results/.gitkeep
+runs/
+wandb/
+outputs/
+*.log
+
+# Data and caches
+data/*
+!data/.gitkeep
+.cache/
+hf_cache/
+
+# Model weights and checkpoints
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.gguf
+*.onnx
+modelzoo/*
+!modelzoo/*.yaml
+!modelzoo/*.yml
+!modelzoo/*.json
+checkpoints/*
+!checkpoints/.gitkeep
