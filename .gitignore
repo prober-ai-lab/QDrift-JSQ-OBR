@@ -29,9 +29,6 @@ htmlcov/
 *.cubin
 *.ptx
 
-# Local documentation
-docs/
-
 # IDE / OS
 .idea/
 .vscode/
@@ -72,3 +69,6 @@ modelzoo/*
 !modelzoo/*.json
 checkpoints/*
 !checkpoints/.gitkeep
+
+# Local Documents
+docs
