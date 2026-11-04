@@ -141,7 +141,8 @@ def _hessians_streaming(
         dtype=hessian_system.dtype,
     )
     hessian_system = 0.5 * (hessian_system + hessian_system.t())
-    return hessian_fp, hessian_system, hessian_diff
+    mask_hessian = hessian_hat if compressed_input is not None else hessian_fp
+    return mask_hessian, hessian_system, hessian_diff
 
 
 def _score(
@@ -223,7 +224,8 @@ def _hessians(
         dtype=hessian_system.dtype,
     )
     hessian_system = 0.5 * (hessian_system + hessian_system.t())
-    return hessian_fp, hessian_system, hessian_diff
+    mask_hessian = hessian_hat if compressed_input is not None else hessian_fp
+    return mask_hessian, hessian_system, hessian_diff
 
 
 @dataclass
@@ -290,6 +292,8 @@ def _quantize_layer(
         )
         - weight_rot
     )
+    # Masking uses the compressed-path Hessian when dual-path calibration is
+    # available; otherwise it falls back to the full-precision Hessian.
     if hessian_fp is not None:
         diag = torch.diagonal(hessian_fp).clamp_min(0)
     else:
@@ -373,15 +377,56 @@ def _quantize_layer(
             drift_weight=drift_weight,
         )
         retained = pruning_state.retained
+        comp_alpha = recipe.compensation.alpha
         retained2 = compensate_quantization_error(
             weight_rot,
             pruning_state,
             quant_scale,
             qparams,
             recipe.weight.grid,
-            alpha=recipe.compensation.alpha,
+            alpha=comp_alpha,
         )
+        if recipe.compensation.method == "drift":
+            # Per-layer alpha split: choose the split whose quantized retained
+            # values have the smallest Xhat-Hessian-weighted error.
+            target = weight_rot.gather(1, keep)
+            diag_keep = diag[keep]
+            best_score = float("inf")
+            for candidate_alpha in (0.25, 0.5, 0.75):
+                cut = int(cols * candidate_alpha)
+                boundary = torch.searchsorted(
+                    keep,
+                    torch.full(
+                        (keep.shape[0], 1),
+                        cut,
+                        dtype=keep.dtype,
+                        device=keep.device,
+                    ),
+                ).squeeze(1)
+                candidate_state = replace(pruning_state, boundary=boundary)
+                candidate = compensate_quantization_error(
+                    weight_rot,
+                    candidate_state,
+                    quant_scale,
+                    qparams,
+                    recipe.weight.grid,
+                    alpha=candidate_alpha,
+                )
+                quantized = fake_quantize(
+                    candidate,
+                    quant_scale,
+                    qparams,
+                    recipe.weight.grid,
+                )
+                score = float(
+                    ((quantized - target).pow(2) * diag_keep).sum().item()
+                )
+                if score < best_score:
+                    best_score = score
+                    comp_alpha = candidate_alpha
+                    retained2 = candidate
     else:
+        comp_alpha = recipe.compensation.alpha
         retained = weight_rot.gather(1, keep)
         retained2 = retained
 
@@ -453,9 +498,7 @@ def _quantize_layer(
             dtype=weight.dtype,
         )
         compensated_full.scatter_(1, keep, retained2)
-        gptq_alpha = (
-            recipe.compensation.alpha if recipe.compensation.method != "none" else 0.0
-        )
+        gptq_alpha = comp_alpha if recipe.compensation.method != "none" else 0.0
         codes_full = gptq_quantize(
             compensated_full,
             hessian_system,
