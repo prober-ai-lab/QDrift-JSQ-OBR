@@ -105,10 +105,10 @@ One `compress` run writes:
 Example names:
 
 ```text
-qwen2.5-0.5b__0.0w16a16kv16__wanda_mt_rf_rtn_pc__none__h13e5adcc
-qwen2.5-0.5b__0.5x2to4w16a16kv16__wanda_mt_rf_rtn_pc__none__hd0d8bd3a
-qwen2.5-0.5b__0.0w4a16kv16__wanda_mr_rc_rtn_pc__obr
-qwen2.5-0.5b__0.5x2to4w4a16kv16__wanda_mr_rc_rtn_pc__obr
+qwen2.5-0.5b__0.0w16a16kv16__wanda_mt_rf_rtn_pc__none__cp__hc1d389d5
+qwen2.5-0.5b__0.5x4to8w16a16kv16__wanda_mt_rf_rtn_pc__none__cp__pw0__h73418bef
+qwen2.5-0.5b__0.0w4a4kv4__wanda_mt_rc_gptq_pc_an_kn__obr__cp__h3e67ec5e
+qwen2.5-0.5b__0.5x4to8w4a4kv4__wanda_mt_rc_gptq_pc_an_kn__obr__cp__pw0.4
 ```
 
 Use `--single` to write only the joint checkpoint.
@@ -152,7 +152,8 @@ CUDA_VISIBLE_DEVICES=2 python3 -m main benchmark \
   --structure 2:4 --sparsity 0.5 --criterion qwanda --lambda 0.4 \
   --w-bits 4 --w-gran channel \
   --a-bits 4 --kv-bits 4 \
-  --quant gptq --comp none --rotation none \
+  --quant gptq --comp none --rotation none --no-channel-permutation \
+  --pairwise-fraction 1.0 \
   --tasks e2e --engine inference --batch-size 8 \
   --e2e-seqlen 1024 --e2e-decode-tokens 64 \
   --e2e-warmup 2 --e2e-iters 5 --replace

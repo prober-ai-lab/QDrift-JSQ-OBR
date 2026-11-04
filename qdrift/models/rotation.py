@@ -206,13 +206,25 @@ def install_online_hadamards(
     head_dim = config.hidden_size // num_heads
     o_index = None if o_permutation is None else o_permutation.to(torch.long)
     down_index = None if down_permutation is None else down_permutation.to(torch.long)
+    o_cache: dict[torch.device, torch.Tensor] = {}
+    down_cache: dict[torch.device, torch.Tensor] = {}
+
+    def _cached_index(index: torch.Tensor, cache: dict[torch.device, torch.Tensor], device: torch.device) -> torch.Tensor:
+        value = cache.get(device)
+        if value is None:
+            value = index.to(device)
+            cache[device] = value
+        return value
 
     def down_hook(module, inputs):
         if not inputs:
             return None
         work = matmul_hadU(inputs[0])
         if down_index is not None:
-            work = work.index_select(-1, down_index.to(work.device))
+            work = work.index_select(
+                -1,
+                _cached_index(down_index, down_cache, work.device),
+            )
         return (work,) + inputs[1:]
 
     def o_hook(module, inputs):
@@ -224,7 +236,10 @@ def install_online_hadamards(
         work = matmul_hadU(work)  # H_head per head
         work = matmul_hadU(work.reshape(shape))  # H_hidden
         if o_index is not None:
-            work = work.index_select(-1, o_index.to(work.device))
+            work = work.index_select(
+                -1,
+                _cached_index(o_index, o_cache, work.device),
+            )
         return (work,) + inputs[1:]
 
     for layer in model.model.layers:

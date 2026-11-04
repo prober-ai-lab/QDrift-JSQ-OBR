@@ -236,13 +236,20 @@ class LayerResult:
     code_encoding: str
 
 
-def _write_layer_mask(sink: Path, name: str, packed: torch.Tensor) -> None:
-    """Atomically publish one packed mask for the sparse-baseline worker."""
+def _write_layer_mask(
+    sink: Path,
+    name: str,
+    packed: torch.Tensor,
+    structure: str | None = None,
+) -> None:
+    """Atomically publish one packed mask and its layer structure."""
     sink.mkdir(parents=True, exist_ok=True)
     path = sink / f"{name}.mask"
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     torch.save(packed.cpu().contiguous(), temporary)
     os.replace(temporary, path)
+    if structure is not None:
+        (sink / f"{name}.structure").write_text(str(structure), encoding="utf-8")
 
 
 def _quantize_layer(
@@ -796,11 +803,16 @@ def compress(
     chunks = _batch_chunks(chunks, recipe.batch_size)
     groups = layer_groups(model, layers)
 
+    needs_pairwise_selection = (
+        recipe.prune.structure in ("2:4", "4:8")
+        and 0.0 < recipe.pairwise_fraction < 1.0
+    )
     need_hessian = (
         recipe.prune.criterion in ("wanda", "qwanda")
         or recipe.compensation.method != "none"
         or recipe.weight.method == "gptq"
         or recipe.smoothing.alpha is not None
+        or needs_pairwise_selection
     )
     fp_inputs: dict[str, torch.Tensor] = {}
     sequential: SequentialCalibration | None = None
@@ -818,10 +830,7 @@ def compress(
         )
         fp_inputs = calibration.inputs
         sequential = SequentialCalibration(model, calibration)
-        if (
-            recipe.prune.structure in ("2:4", "4:8")
-            and 0.0 < recipe.pairwise_fraction < 1.0
-        ):
+        if needs_pairwise_selection:
             ratios = _pairwise_sensitivity(
                 model,
                 groups,
@@ -919,7 +928,7 @@ def compress(
                 )
                 layer_meta[name] = result.meta
                 if mask_dir is not None:
-                    _write_layer_mask(mask_dir, name, result.tensors["weight_mask"])
+                    _write_layer_mask(mask_dir, name, result.tensors["weight_mask"], result.meta.get("structure"))
                 value_layout = result.value_layout
                 scale_layout = result.scale_layout
                 code_encoding = result.code_encoding
@@ -1004,7 +1013,7 @@ def compress(
             )
             layer_meta[name] = result.meta
             if mask_dir is not None:
-                _write_layer_mask(mask_dir, name, result.tensors["weight_mask"])
+                _write_layer_mask(mask_dir, name, result.tensors["weight_mask"], result.meta.get("structure"))
             value_layout = result.value_layout
             scale_layout = result.scale_layout
             code_encoding = result.code_encoding
@@ -1045,7 +1054,7 @@ def compress(
                 )
                 layer_meta[name] = result.meta
                 if mask_dir is not None:
-                    _write_layer_mask(mask_dir, name, result.tensors["weight_mask"])
+                    _write_layer_mask(mask_dir, name, result.tensors["weight_mask"], result.meta.get("structure"))
                 value_layout = result.value_layout
                 scale_layout = result.scale_layout
                 code_encoding = result.code_encoding
@@ -1245,8 +1254,14 @@ def write_fp16_baseline(
     wait for per-layer masks published by ``compress(..., mask_sink=...)``.
     """
     joint_tensors: dict[str, torch.Tensor] = {}
+    joint_layers: dict[str, dict[str, object]] = {}
     if joint_checkpoint is not None:
-        joint_tensors = load_file(str(Path(joint_checkpoint)))
+        joint_path = Path(joint_checkpoint)
+        joint_tensors = load_file(str(joint_path))
+        joint_sidecar = joint_path.with_suffix(".json")
+        if joint_sidecar.exists():
+            joint_config = json.loads(joint_sidecar.read_text(encoding="utf-8"))
+            joint_layers = dict(joint_config.get("layers", {}))
     if use_joint_mask and not joint_tensors and mask_dir is None:
         raise ValueError("sparse baseline requires joint_checkpoint or mask_dir")
 
@@ -1276,9 +1291,17 @@ def write_fp16_baseline(
         rows = int(layer.weight.shape[0])
         cols = int(layer.weight.shape[1])
         weight = layer.weight.data.detach().float().to(device)
+        layer_structure = (
+            str(joint_layers.get(name, {}).get("structure", recipe.prune.structure))
+            if use_joint_mask
+            else "none"
+        )
         if use_joint_mask:
             if mask_dir is not None:
                 packed = _wait_for_mask(mask_dir, name).to(device=device)
+                structure_path = Path(mask_dir) / f"{name}.structure"
+                if structure_path.exists():
+                    layer_structure = structure_path.read_text(encoding="utf-8").strip()
             else:
                 packed = joint_tensors[f"{name}.weight_mask"].to(device=device)
             mask = _unpack_mask(packed, cols)
@@ -1309,6 +1332,7 @@ def write_fp16_baseline(
             "bits": 16,
             "nnz": int(mask.sum().item()),
             "smooth_alpha": None,
+            "structure": layer_structure,
         }
 
     config = recipe.base_config()

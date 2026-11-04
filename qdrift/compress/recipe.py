@@ -125,10 +125,10 @@ class WeightQuantSpec:
         return cls(
             bits=int(data.get("bits", 4)),
             granularity=GranularitySpec.from_dict(data["granularity"]),
-            grid=str(data.get("grid", "midrise")),
+            grid=str(data.get("grid", "midtread")),
             range=str(data.get("range", "clip")),
             clip_rhos=tuple(data.get("clip_rhos", DEFAULT_CLIP_RHOS)),
-            method=str(data.get("method", "rtn")),
+            method=str(data.get("method", "gptq")),
             gptq_alpha=float(data.get("gptq_alpha", 0.5)),
             gptq_blocksize=int(data.get("gptq_blocksize", 128)),
         )
@@ -167,10 +167,10 @@ class ActivationQuantSpec:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ActivationQuantSpec:
         return cls(
-            bits=int(data.get("bits", 16)),
+            bits=int(data.get("bits", 4)),
             granularity=GranularitySpec.from_dict(data["granularity"]),
             grid=str(data.get("grid", "midtread")),
-            clip_ratio=float(data.get("clip_ratio", 0.9)),
+            clip_ratio=float(data.get("clip_ratio", 1.0)),
         )
 
 
@@ -215,12 +215,12 @@ class KVQuantSpec:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> KVQuantSpec:
         return cls(
-            k_bits=int(data.get("k_bits", data.get("bits", 16))),
-            v_bits=int(data.get("v_bits", data.get("bits", 16))),
+            k_bits=int(data.get("k_bits", data.get("bits", 4))),
+            v_bits=int(data.get("v_bits", data.get("bits", 4))),
             granularity=GranularitySpec.from_dict(data["granularity"]),
             grid=str(data.get("grid", "midtread")),
-            k_clip_ratio=float(data.get("k_clip_ratio", 0.85)),
-            v_clip_ratio=float(data.get("v_clip_ratio", 0.95)),
+            k_clip_ratio=float(data.get("k_clip_ratio", 1.0)),
+            v_clip_ratio=float(data.get("v_clip_ratio", 1.0)),
         )
 
 
@@ -268,8 +268,8 @@ class PruneSpec:
     def from_dict(cls, data: dict[str, Any]) -> PruneSpec:
         return cls(
             sparsity=round(float(data.get("sparsity", data.get("ratio", 0.5))), 1),
-            structure=str(data.get("structure", "2:4")),
-            criterion=str(data.get("criterion", "qwanda")),
+            structure=str(data.get("structure", "4:8")),
+            criterion=str(data.get("criterion", "wanda")),
             lam=float(data.get("lambda", 0.4)),
         )
 
@@ -311,7 +311,7 @@ class SmoothSpec:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SmoothSpec:
-        return cls(alpha=data.get("alpha", 0.5))
+        return cls(alpha=data.get("alpha", None))
 
 
 @dataclass(frozen=True)
@@ -411,7 +411,6 @@ class CompressionRecipe:
             "max_layers": self.max_layers,
             "channel_permutation": self.channel_permutation,
             "pairwise_fraction": self.pairwise_fraction,
-            "pairwise_layers": list(self.pairwise_layers),
         }
 
     @classmethod
@@ -426,12 +425,12 @@ class CompressionRecipe:
             rotation=RotationSpec.from_dict(data["rotation"]),
             smoothing=SmoothSpec.from_dict(data["smoothing"]),
             compensation=CompensationSpec.from_dict(data["compensation"]),
-            nsamples=int(calib.get("nsamples", 32)),
-            seqlen=int(calib.get("seqlen", 1024)),
+            nsamples=int(calib.get("nsamples", 128)),
+            seqlen=int(calib.get("seqlen", 2048)),
             batch_size=int(calib.get("batch_size", 16)),
             max_layers=int(data.get("max_layers", 0)),
-            channel_permutation=bool(data.get("channel_permutation", False)),
-            pairwise_fraction=float(data.get("pairwise_fraction", 0.0)),
+            channel_permutation=bool(data.get("channel_permutation", True)),
+            pairwise_fraction=float(data.get("pairwise_fraction", 0.4)),
             pairwise_layers=tuple(str(name) for name in data.get("pairwise_layers", ())),
         )
 

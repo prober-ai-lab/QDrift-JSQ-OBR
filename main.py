@@ -33,7 +33,7 @@ def _sparsity(value: str) -> float:
 
 
 def _fraction(value: str) -> float:
-    parsed = round(float(value), 1)
+    parsed = float(value)
     if not 0.0 <= parsed <= 1.0:
         raise argparse.ArgumentTypeError(f"pairwise fraction must be in [0, 1], got {value}")
     return parsed

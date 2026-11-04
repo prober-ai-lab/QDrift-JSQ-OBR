@@ -46,9 +46,14 @@ class _FakeW4A4Linear(nn.Module):
             raise ValueError("consistency check expects channel/tensor scales")
         self.in_features = int(case.in_features)
         self.out_features = int(case.out_features)
+        layer_meta = config.get("layers", {}).get(name, {})
+        layer_structure = layer_meta.get(
+            "structure",
+            recipe.prune.structure,
+        )
         self.sparse = (
             regime == "joint"
-            and recipe.prune.structure == "2:4_pairwise"
+            and str(layer_structure) in ("2:4_pairwise", "4:8_pairwise")
         )
         self.clip_ratio = float(recipe.activation.clip_ratio)
         mask = (
