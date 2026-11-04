@@ -81,10 +81,10 @@ class WeightQuantSpec:
     granularity: GranularitySpec = field(
         default_factory=lambda: GranularitySpec("channel", None)
     )
-    grid: str = "midrise"
+    grid: str = "midtread"
     range: str = "clip"
     clip_rhos: tuple[float, ...] = DEFAULT_CLIP_RHOS
-    method: str = "rtn"
+    method: str = "gptq"
     gptq_alpha: float = 0.5
     gptq_blocksize: int = 128
 
@@ -138,12 +138,12 @@ class WeightQuantSpec:
 class ActivationQuantSpec:
     """Activation quantization used by fake runtime evaluation."""
 
-    bits: int = 16
+    bits: int = 4
     granularity: GranularitySpec = field(
         default_factory=lambda: GranularitySpec("token", None)
     )
     grid: str = "midtread"
-    clip_ratio: float = 0.9
+    clip_ratio: float = 1.0
 
     def validate(self) -> None:
         if not 1 <= self.bits <= 16:
@@ -178,14 +178,14 @@ class ActivationQuantSpec:
 class KVQuantSpec:
     """Key/value cache quantization used by fake runtime evaluation."""
 
-    k_bits: int = 16
-    v_bits: int = 16
+    k_bits: int = 4
+    v_bits: int = 4
     granularity: GranularitySpec = field(
         default_factory=lambda: GranularitySpec("token", None)
     )
     grid: str = "midtread"
-    k_clip_ratio: float = 0.85
-    v_clip_ratio: float = 0.95
+    k_clip_ratio: float = 1.0
+    v_clip_ratio: float = 1.0
 
     def validate(self) -> None:
         if not 1 <= self.k_bits <= 16:
@@ -229,8 +229,8 @@ class PruneSpec:
     """Pruning criterion."""
 
     sparsity: float = 0.5
-    structure: str = "2:4"
-    criterion: str = "qwanda"
+    structure: str = "4:8"
+    criterion: str = "wanda"
     lam: float = 0.4
 
     def validate(self) -> None:
@@ -243,10 +243,9 @@ class PruneSpec:
             "unstructured",
             "2:4",
             "4:8",
-            "2:4_pairwise",
         ):
             raise ValueError(f"unknown structure {self.structure}")
-        if self.structure in ("2:4", "4:8", "2:4_pairwise") and self.sparsity != 0.5:
+        if self.structure in ("2:4", "4:8") and self.sparsity != 0.5:
             raise ValueError(
                 f"{self.structure} structured sparsity requires sparsity 0.5"
             )
@@ -280,7 +279,7 @@ class RotationSpec:
     """Rotation used as the weight quantization basis."""
 
     mode: str = "hadamard"
-    seed: int = 0
+    seed: int = 42
 
     def validate(self) -> None:
         if self.mode not in ("hadamard", "none"):
@@ -293,7 +292,7 @@ class RotationSpec:
     def from_dict(cls, data: dict[str, Any]) -> RotationSpec:
         return cls(
             mode=str(data.get("mode", "hadamard")),
-            seed=int(data.get("seed", 0)),
+            seed=int(data.get("seed", 42)),
         )
 
 
@@ -301,7 +300,7 @@ class RotationSpec:
 class SmoothSpec:
     """Per-input-channel smoothing."""
 
-    alpha: float | None = 0.5
+    alpha: float | None = None
 
     def validate(self) -> None:
         if self.alpha is not None and not 0.0 <= self.alpha <= 1.0:
@@ -322,7 +321,7 @@ class CompensationSpec:
     method: str = "obr"
     alpha: float = 0.5
     shift_scale: float = 1.0
-    damping: float = 1e-4
+    damping: float = 0.1
 
     def validate(self) -> None:
         if self.method not in ("none", "obr", "drift"):
@@ -348,7 +347,7 @@ class CompensationSpec:
             method=str(data.get("method", "obr")),
             alpha=float(data.get("alpha", 0.5)),
             shift_scale=float(data.get("shift_scale", 1.0)),
-            damping=float(data.get("damping", 1e-4)),
+            damping=float(data.get("damping", 0.1)),
         )
 
 
@@ -364,9 +363,14 @@ class CompressionRecipe:
     rotation: RotationSpec = field(default_factory=RotationSpec)
     smoothing: SmoothSpec = field(default_factory=SmoothSpec)
     compensation: CompensationSpec = field(default_factory=CompensationSpec)
-    nsamples: int = 32
-    seqlen: int = 1024
+    nsamples: int = 128
+    seqlen: int = 2048
+    batch_size: int = 16
     max_layers: int = 0
+    channel_permutation: bool = True
+    pairwise_fraction: float = 0.4
+    pairwise_threshold: float = 0.0
+    pairwise_layers: tuple[str, ...] = ()
 
     def validate(self) -> None:
         self.weight.validate()
@@ -380,8 +384,14 @@ class CompressionRecipe:
             raise ValueError("nsamples must be positive")
         if self.seqlen <= 0:
             raise ValueError("seqlen must be positive")
+        if self.batch_size <= 0:
+            raise ValueError("batch_size must be positive")
         if self.max_layers < 0:
             raise ValueError("max_layers must be non-negative")
+        if self.channel_permutation and self.rotation.mode == "none":
+            raise ValueError("channel permutation requires Hadamard rotation")
+        if not 0.0 <= self.pairwise_fraction <= 1.0:
+            raise ValueError("pairwise_fraction must be in [0, 1]")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -393,8 +403,15 @@ class CompressionRecipe:
             "rotation": self.rotation.to_dict(),
             "smoothing": self.smoothing.to_dict(),
             "compensation": self.compensation.to_dict(),
-            "calibration": {"nsamples": self.nsamples, "seqlen": self.seqlen},
+            "calibration": {
+                "nsamples": self.nsamples,
+                "seqlen": self.seqlen,
+                "batch_size": self.batch_size,
+            },
             "max_layers": self.max_layers,
+            "channel_permutation": self.channel_permutation,
+            "pairwise_fraction": self.pairwise_fraction,
+            "pairwise_layers": list(self.pairwise_layers),
         }
 
     @classmethod
@@ -411,7 +428,11 @@ class CompressionRecipe:
             compensation=CompensationSpec.from_dict(data["compensation"]),
             nsamples=int(calib.get("nsamples", 32)),
             seqlen=int(calib.get("seqlen", 1024)),
+            batch_size=int(calib.get("batch_size", 16)),
             max_layers=int(data.get("max_layers", 0)),
+            channel_permutation=bool(data.get("channel_permutation", False)),
+            pairwise_fraction=float(data.get("pairwise_fraction", 0.0)),
+            pairwise_layers=tuple(str(name) for name in data.get("pairwise_layers", ())),
         )
 
     @classmethod
@@ -436,7 +457,7 @@ class CompressionRecipe:
                 self.compensation,
                 alpha=0.5,
                 shift_scale=1.0,
-                damping=1e-4,
+                damping=0.1,
             ),
             weight=replace(
                 self.weight,
@@ -448,16 +469,21 @@ class CompressionRecipe:
                 gptq_alpha=0.5,
                 gptq_blocksize=128,
             ),
-            activation=replace(self.activation, grid="midtread", clip_ratio=0.9),
+            activation=replace(self.activation, grid="midtread", clip_ratio=1.0),
             kv_cache=replace(
                 self.kv_cache,
                 grid="midtread",
-                k_clip_ratio=0.85,
-                v_clip_ratio=0.95,
+                k_clip_ratio=1.0,
+                v_clip_ratio=1.0,
             ),
-            nsamples=32,
-            seqlen=1024,
+            nsamples=128,
+            seqlen=2048,
+            batch_size=16,
             max_layers=0,
+            channel_permutation=True,
+            pairwise_fraction=0.4,
+            pairwise_threshold=0.0,
+            pairwise_layers=(),
         )
         return self.to_dict() != canonical.to_dict()
 
@@ -467,8 +493,6 @@ class CompressionRecipe:
             tag += "x2to4"
         elif self.prune.structure == "4:8":
             tag += "x4to8"
-        elif self.prune.structure == "2:4_pairwise":
-            tag += "x2to4p"
         return tag
 
     def _criterion_tag(self) -> str:
@@ -504,6 +528,10 @@ class CompressionRecipe:
             parts.append(f"k{self.kv_cache.granularity.tag()}")
         infix = "_".join(parts)
         tag = f"{prefix}__{infix}__{self.compensation.method}"
+        if self.channel_permutation:
+            tag += "__cp"
+        if self.prune.structure in ("2:4", "4:8"):
+            tag += f"__pw{self.pairwise_fraction:g}"
         if self._has_hidden_nondefault():
             tag = f"{tag}__h{self.recipe_hash()[:8]}"
         return tag
@@ -525,7 +553,12 @@ class CompressionRecipe:
 
 def quant_recipe(recipe: CompressionRecipe) -> CompressionRecipe:
     """Return the quantization-only variant of a joint recipe."""
-    return replace(recipe, prune=replace(recipe.prune, sparsity=0.0, structure="none"))
+    return replace(
+        recipe,
+        prune=replace(recipe.prune, sparsity=0.0, structure="none"),
+        pairwise_fraction=0.0,
+        pairwise_layers=(),
+    )
 
 
 def fp16_recipe(
@@ -549,6 +582,8 @@ def fp16_recipe(
         prune=replace(recipe.prune, sparsity=sparsity, structure=structure),
         compensation=replace(recipe.compensation, method="none"),
         smoothing=SmoothSpec(alpha=None),
+        pairwise_fraction=0.0,
+        pairwise_layers=(),
     )
 
 

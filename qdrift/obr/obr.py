@@ -187,12 +187,13 @@ def compensate_quantization_error(
             device=weight.device,
             dtype=weight.dtype,
         )
-        if pruning_state.drift_weight is not None:
-            # DriftOBR: retain the explicit w @ dX term.  The pruning and
-            # dropped-column errors are already folded into ``retained`` and
-            # must not be added a second time here.
-            rhs += pruning_state.drift_weight.gather(1, late)
         early_matrix = _sub(hessian_raw, early[:1], late[:1]).squeeze(0)
+        if pruning_state.drift_weight is not None:
+            # Drift compensation: keep the explicit w @ dX term and propagate
+            # the pruning delta of the early retained split into the late
+            # split.  The dropped-column term is empty for a dense mask.
+            rhs += pruning_state.drift_weight.gather(1, late)
+            rhs += pruning_state.delta[:, :split] @ early_matrix
         rhs += early_error[:, :split] @ early_matrix
         retained_values[:, split:] += -solve_psd_many(system, rhs)
         return retained_values
@@ -221,14 +222,24 @@ def compensate_quantization_error(
                 device=weight.device,
                 dtype=weight.dtype,
             )
+            early_matrix = _sub(hessian_raw, early_batch, late_batch)
             if pruning_state.drift_weight is not None:
-                # DriftOBR: keep only w @ dX here.  ``retained_values`` already
-                # contains the pruning delta and the dropped columns contribute
-                # zero, so W_drop and delta must not be applied again.
+                # Drift quantization compensation carries all three error
+                # sources: dropped columns, the pruning delta, and the early
+                # quantization error.  Plain OBR keeps its original behavior.
+                drop_batch = drop[batch]
                 rhs += pruning_state.drift_weight[batch].gather(1, late_batch)
+                rhs -= torch.bmm(
+                    weight[batch].gather(1, drop_batch).unsqueeze(1),
+                    _sub(hessian_raw, drop_batch, late_batch),
+                ).squeeze(1)
+                rhs += torch.bmm(
+                    pruning_state.delta[batch, :split].unsqueeze(1),
+                    early_matrix,
+                ).squeeze(1)
             rhs += torch.bmm(
                 early_error[batch, :split].unsqueeze(1),
-                _sub(hessian_raw, early_batch, late_batch),
+                early_matrix,
             ).squeeze(1)
             system = _sub(hessian_system, late_batch, late_batch)
             correction = -solve_psd(system, rhs.unsqueeze(-1)).squeeze(-1)

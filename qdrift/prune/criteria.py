@@ -20,7 +20,11 @@ def qwanda_score(
     quant_error: torch.Tensor,
     lam: float,
 ) -> torch.Tensor:
-    """Return the Q-WANDA score."""
+    """Return the Q-WANDA score.
+
+    ``S_ij^2 = max(0, lambda * w_ij^2 - (1-lambda) * eps_ij^2) * ||x_j||^2``,
+    where ``eps = Q(w) - w`` is the per-layer quantization error.
+    """
     coefficient = lam * weight.pow(2) - (1.0 - lam) * quant_error.pow(2)
     coefficient = coefficient.clamp_min(0)
     return coefficient * scaler_row.clamp_min(0).reshape(1, -1)

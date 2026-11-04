@@ -9,6 +9,7 @@ Terminology:
 * ``2:4_pairwise`` -- INT4 sparse Tensor Core layout: keep one adjacent
   2-element pair out of every four columns.  The kernel packs two 4-column
   groups per metadata word, so this is also called the hardware 4:8 layout.
+* ``4:8_pairwise`` -- hardware 4:8 layout with any two of four aligned pairs.
 * ``unstructured`` -- keep the top-k scoring weights per output row.
 """
 
@@ -65,6 +66,19 @@ def mask_2to4_pairwise(score: torch.Tensor) -> torch.Tensor:
     return pair_mask.unsqueeze(3).expand(-1, -1, -1, 2).reshape(rows, cols)
 
 
+def mask_4to8_pairwise(score: torch.Tensor) -> torch.Tensor:
+    """Keep the two highest-scoring adjacent pairs in every group of eight."""
+    rows, cols = score.shape
+    if cols % 8 != 0:
+        raise ValueError("4:8_pairwise pruning requires a width divisible by 8")
+    grouped = score.reshape(rows, cols // 8, 4, 2)
+    pair_score = grouped.sum(dim=3)
+    indices = torch.topk(pair_score, 2, dim=2).indices
+    pair_mask = torch.zeros_like(pair_score, dtype=torch.bool)
+    pair_mask.scatter_(2, indices, True)
+    return pair_mask.unsqueeze(3).expand(-1, -1, -1, 2).reshape(rows, cols)
+
+
 def topk_mask(score: torch.Tensor, sparsity: float) -> torch.Tensor:
     """Keep the highest-scoring entries in each output row."""
     if not 0.0 <= sparsity < 1.0:
@@ -91,6 +105,8 @@ def mask_from_score(
         return mask_4to8(score)
     if structure == "2:4_pairwise":
         return mask_2to4_pairwise(score)
+    if structure == "4:8_pairwise":
+        return mask_4to8_pairwise(score)
     if structure == "none":
         return torch.ones_like(score, dtype=torch.bool)
     raise ValueError(f"unknown pruning structure {structure}")

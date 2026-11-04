@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import platform
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from statistics import mean
 
@@ -31,6 +31,10 @@ from benchmark.kernels.lib.registry import select_kernel
 from qdrift.compress.recipe import CompressionRecipe
 from qdrift.data.tokenizer import load_tokenizer
 from qdrift.models.backbone import load_backbone
+from qdrift.models.permutation import (
+    ChannelPermutations,
+    apply_channel_permutations,
+)
 from qdrift.models.rotation import (
     fuse_layer_norms,
     install_online_hadamards,
@@ -235,6 +239,10 @@ def _fp16_regime_case(
         weight[mask] = kept_values.reshape(-1)
 
     recipe = CompressionRecipe.from_config(config)
+    layer_meta = config.get("layers", {}).get(name, {})
+    layer_structure = layer_meta.get("structure") if isinstance(layer_meta, dict) else None
+    if layer_structure and layer_structure != recipe.prune.structure:
+        recipe = replace(recipe, prune=replace(recipe.prune, structure=str(layer_structure)))
     semi_weight = None
     if (
         regime == "sparse"
@@ -277,18 +285,25 @@ def make_regime_case(
         raise ValueError(f"unknown regime {regime}")
     case = make_layer_case(config, tensors, name)
     recipe = CompressionRecipe.from_config(config)
+    layer_meta = config.get("layers", {}).get(name, {})
+    layer_structure = layer_meta.get("structure") if isinstance(layer_meta, dict) else None
+    if layer_structure and layer_structure != recipe.prune.structure:
+        recipe = replace(
+            recipe,
+            prune=replace(recipe.prune, structure=str(layer_structure)),
+        )
     # Hardware sparse Tensor Cores consume 2:4 data at pair granularity.
     # 2:4_pairwise is the legal INT4 sparse pattern; the arbitrary 2:4/4:8
     # OBR masks stay on the dense INT4/INT8 path.
     sparse_joint = (
         regime == "joint"
         and allow_sparse
-        and recipe.prune.structure in ("2:4", "2:4_pairwise")
+        and recipe.prune.structure in ("2:4", "2:4_pairwise", "4:8_pairwise")
     )
     sparse_pairwise = (
         regime == "joint"
         and allow_sparse
-        and recipe.prune.structure == "2:4_pairwise"
+        and recipe.prune.structure in ("2:4_pairwise", "4:8_pairwise")
         and recipe.weight.granularity.kind in ("tensor", "channel")
     )
     selected = select_kernel(recipe, regime, device, allow_sparse)
@@ -372,7 +387,7 @@ def make_regime_case(
         case.int8_weight is not None
         and recipe.weight.bits <= 4
         and recipe.activation.bits < 16
-        and recipe.prune.structure in ("2:4", "4:8", "2:4_pairwise")
+        and recipe.prune.structure in ("2:4", "4:8", "2:4_pairwise", "4:8_pairwise")
         and granularity.kind in ("tensor", "channel")
     ):
         if sparse_pairwise:
@@ -539,12 +554,16 @@ def load_runtime_model(
         dtype=dtype,
     )
     tokenizer = load_tokenizer(recipe.model, manifest_path)
+    permutations = None
     if recipe.rotation.mode != "none":
         fuse_layer_norms(model)
         torch.manual_seed(recipe.rotation.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(recipe.rotation.seed)
         rotate_model(model, recipe.rotation.mode, device, recipe.rotation.seed)
+    if config.get("permutation"):
+        permutations = ChannelPermutations.from_dict(config["permutation"])
+        apply_channel_permutations(model, permutations)
 
     if compile_model:
         from torch import _dynamo as torch_dynamo
@@ -569,7 +588,11 @@ def load_runtime_model(
 
     del modules
     if recipe.rotation.mode != "none":
-        install_online_hadamards(model)
+        install_online_hadamards(
+            model,
+            permutations.o if permutations is not None else None,
+            permutations.down if permutations is not None else None,
+        )
     model.config.use_cache = True
     model.eval()
     return model, tokenizer, recipe
@@ -628,9 +651,12 @@ def measure_runtime(
     iters: int,
     device: str,
     kv_cache: object | None = None,
+    batch: int = 1,
 ) -> dict[str, object]:
+    if batch < 1:
+        raise ValueError(f"batch must be >= 1, got {batch}")
     vocab = int(model.config.vocab_size)
-    ids = torch.randint(0, vocab, (1, seqlen), device=device)
+    ids = torch.randint(0, vocab, (batch, seqlen), device=device)
     use_quant_cache = kv_cache is not None and (
         int(kv_cache.k_bits) < 16 or int(kv_cache.v_bits) < 16
     )
@@ -687,13 +713,18 @@ def measure_runtime(
     decode = summarize(decode_times)
 
     return {
+        "batch": batch,
         "prefill": {
             **prefill,
-            "tokens_per_s": seqlen / max(prefill["p50_ms"] * 1e-3, 1e-12),
+            "tokens_per_s": batch * seqlen / max(prefill["p50_ms"] * 1e-3, 1e-12),
+            "tokens_per_s_per_sequence": seqlen
+            / max(prefill["p50_ms"] * 1e-3, 1e-12),
         },
         "decode": {
             **decode,
-            "tokens_per_s": 1.0 / max(decode["p50_ms"] * 1e-3, 1e-12),
+            "tokens_per_s": batch / max(decode["p50_ms"] * 1e-3, 1e-12),
+            "tokens_per_s_per_sequence": 1.0
+            / max(decode["p50_ms"] * 1e-3, 1e-12),
         },
     }
 

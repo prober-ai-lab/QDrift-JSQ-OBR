@@ -188,22 +188,32 @@ def rotate_model(
         rotate_mlp(layer, q)
 
 
-def install_online_hadamards(model: torch.nn.Module) -> None:
+def install_online_hadamards(
+    model: torch.nn.Module,
+    o_permutation: torch.Tensor | None = None,
+    down_permutation: torch.Tensor | None = None,
+) -> None:
     """Install the runtime Hadamards that cannot be fused into weights.
 
     Attention V/O: V gets H_head per head, O gets full H_hidden.  The online
     O transform applies H_head per head and then H_hidden, so the two full
     Hadamards cancel.  MLP down: the activation follows SiLU, so apply H_full
-    online.  Every transform here uses the fast Hadamard.
+    online.  Optional channel permutations are gathered *after* these Hadamard
+    transforms; that keeps P from having to commute with H.
     """
     config = model.config
     num_heads = config.num_attention_heads
     head_dim = config.hidden_size // num_heads
+    o_index = None if o_permutation is None else o_permutation.to(torch.long)
+    down_index = None if down_permutation is None else down_permutation.to(torch.long)
 
     def down_hook(module, inputs):
         if not inputs:
             return None
-        return (matmul_hadU(inputs[0]),) + inputs[1:]
+        work = matmul_hadU(inputs[0])
+        if down_index is not None:
+            work = work.index_select(-1, down_index.to(work.device))
+        return (work,) + inputs[1:]
 
     def o_hook(module, inputs):
         if not inputs:
@@ -213,6 +223,8 @@ def install_online_hadamards(model: torch.nn.Module) -> None:
         work = value.reshape(*shape[:-1], num_heads, head_dim)
         work = matmul_hadU(work)  # H_head per head
         work = matmul_hadU(work.reshape(shape))  # H_hidden
+        if o_index is not None:
+            work = work.index_select(-1, o_index.to(work.device))
         return (work,) + inputs[1:]
 
     for layer in model.model.layers:

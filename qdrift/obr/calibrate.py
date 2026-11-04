@@ -145,7 +145,7 @@ def capture_calibration_start(
     capture_names: list[str],
     chunks: list[torch.Tensor],
     device: str = "cuda",
-    dtype: torch.dtype = torch.float32,
+    dtype: torch.dtype = torch.float16,
 ) -> CalibrationStart:
     """Capture first-block inputs and, optionally, full-precision layer inputs.
 
@@ -153,12 +153,24 @@ def capture_calibration_start(
     replay each decoder layer with already-compressed weights, matching OBR's
     sequential calibration.  ``capture_names`` may be used to freeze the
     uncompressed input distribution needed by DriftOBR.
+
+    Large calibrations (for example 128 x 2048) are captured into preallocated
+    buffers instead of a list plus ``torch.cat``, which would temporarily double
+    the host memory requirement.
     """
     modules = dict(model.named_modules())
     blocks = list(model.model.layers)
     if not blocks:
         raise ValueError("model has no decoder layers")
-    store: dict[str, list[torch.Tensor]] = {name: [] for name in capture_names}
+    total_tokens = sum(int(chunk.numel()) for chunk in chunks)
+    buffers = {
+        name: torch.empty(
+            (total_tokens, int(modules[name].in_features)),
+            dtype=dtype,
+        )
+        for name in capture_names
+    }
+    offsets = {name: 0 for name in capture_names}
     hidden: list[torch.Tensor] = []
     kwargs_list: list[dict[str, object]] = []
     handles = []
@@ -175,7 +187,10 @@ def capture_calibration_start(
             if not inputs:
                 return
             value = inputs[0].detach().reshape(-1, inputs[0].shape[-1])
-            store[name].append(value.to(device="cpu", dtype=dtype))
+            start = offsets[name]
+            end = start + int(value.shape[0])
+            buffers[name][start:end].copy_(value.to(device="cpu", dtype=dtype))
+            offsets[name] = end
 
         return hook
 
@@ -184,13 +199,16 @@ def capture_calibration_start(
         handles.append(modules[name].register_forward_pre_hook(make_hook(name)))
     try:
         for ids in chunks:
-            model(ids.unsqueeze(0).to(device))
+            inputs = ids.to(device)
+            if inputs.ndim == 1:
+                inputs = inputs.unsqueeze(0)
+            model(inputs)
     finally:
         for handle in handles:
             handle.remove()
     inputs = {
-        name: torch.cat(values, dim=0) if values else torch.empty(0)
-        for name, values in store.items()
+        name: buffers[name][: offsets[name]]
+        for name in capture_names
     }
     return CalibrationStart(hidden=hidden, kwargs=kwargs_list, inputs=inputs)
 
@@ -280,7 +298,10 @@ def capture_inputs(
         handles.append(modules[name].register_forward_pre_hook(make_hook(name)))
     try:
         for ids in chunks:
-            model(ids.unsqueeze(0).to(device))
+            inputs = ids.to(device)
+            if inputs.ndim == 1:
+                inputs = inputs.unsqueeze(0)
+            model(inputs)
     finally:
         for handle in handles:
             handle.remove()

@@ -217,7 +217,7 @@ def _key(
     if (
         regime == "joint"
         and allow_sparse
-        and recipe.prune.structure in ("2:4", "4:8", "2:4_pairwise")
+        and recipe.prune.structure in ("2:4", "4:8", "2:4_pairwise", "4:8_pairwise")
     ):
         if recipe.activation.bits < 16 and recipe.weight.bits <= 4:
             # INT4 sparse MMA uses pair-based metadata and only supports
@@ -226,7 +226,7 @@ def _key(
             # (arbitrary N:M) and group-scale checkpoints fall back to dense
             # INT4/INT8.
             int4_sparse = (
-                recipe.prune.structure == "2:4_pairwise"
+                recipe.prune.structure in ("2:4_pairwise", "4:8_pairwise")
                 and recipe.weight.granularity.kind in ("tensor", "channel")
             )
             pattern = "4:8" if int4_sparse else "dense"

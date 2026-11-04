@@ -47,6 +47,10 @@ ZEROSHOT_TASKS = (
     "winogrande",
     "lambada_openai",
 )
+MANIFEST_PATH = "modelzoo/manifest.yaml"
+CHECKPOINT_DIR = Path("checkpoints")
+BENCHMARK_DIR = Path("results/benchmarks")
+DEVICE = "cuda"
 
 
 @torch.no_grad()
@@ -55,14 +59,16 @@ def ppl_eval(
     chunks: list[torch.Tensor],
     seqlen: int,
     device: str,
+    batch_size: int = 1,
 ) -> tuple[float, int]:
     """Evaluate fixed-length, non-overlapping PPL chunks."""
     if not chunks:
         raise ValueError("no evaluation chunks")
     nll = 0.0
     tokens = 0
-    for ids in chunks:
-        inputs = ids.unsqueeze(0).to(device)
+    for start in range(0, len(chunks), batch_size):
+        group = chunks[start : start + batch_size]
+        inputs = torch.stack(group).to(device)
         logits = model(inputs).logits
         shift_logits = logits[:, :-1, :].contiguous()
         shift_labels = inputs[:, 1:].contiguous()
@@ -70,8 +76,9 @@ def ppl_eval(
             shift_logits.view(-1, shift_logits.size(-1)),
             shift_labels.view(-1),
         )
-        nll += float(loss.item()) * seqlen
-        tokens += seqlen
+        count = len(group)
+        nll += float(loss.item()) * seqlen * count
+        tokens += seqlen * count
     return math.exp(nll / max(tokens, 1)), tokens
 
 
@@ -173,10 +180,10 @@ def evaluate_regimes(
     ppl_seqlen: int = 1024,
     ppl_chunks: int = 32,
     zeroshot_tasks: tuple[str, ...] = ZEROSHOT_TASKS,
-    zeroshot_batch_size: int = 128,
-    seed: int = 0,
-    e2e_seqlen: int = 512,
-    e2e_decode_tokens: int = 32,
+    batch_size: int = 16,
+    seed: int = 42,
+    e2e_seqlen: int = 1024,
+    e2e_decode_tokens: int = 64,
     e2e_warmup: int = 3,
     e2e_iters: int = 5,
     compile_model: bool = False,
@@ -236,6 +243,7 @@ def evaluate_regimes(
                         chunks[dataset],
                         seqlen=ppl_seqlen,
                         device=device,
+                        batch_size=batch_size,
                     )
                     for dataset in ppl_datasets
                 }
@@ -244,7 +252,7 @@ def evaluate_regimes(
                     model,
                     tokenizer,
                     zeroshot_tasks,
-                    zeroshot_batch_size,
+                    batch_size,
                 )
             if efficiency_requested and regime in efficiency_regimes:
                 torch.cuda.reset_peak_memory_stats()
@@ -256,6 +264,7 @@ def evaluate_regimes(
                     iters=e2e_iters,
                     device=device,
                     kv_cache=loaded_recipe.kv_cache,
+                    batch=batch_size,
                 )
                 stats["load_s"] = load_s
                 stats["precompile_s"] = precompile_s
@@ -433,13 +442,18 @@ def _summary(path: Path, payload: dict[str, object]) -> str:
     return " ".join(parts)
 
 
+def _benchmark_output_path(recipe: CompressionRecipe, tasks: tuple[str, ...]) -> Path:
+    suffix = "-".join(tasks) if tasks else "all"
+    return BENCHMARK_DIR / f"{recipe.checkpoint_id()}__{suffix}.json"
+
+
 def run_benchmark(recipe: CompressionRecipe, args: Any) -> int:
     """Resolve the four checkpoints and write the benchmark result."""
     tasks = _parse_tasks(args.tasks)
-    sparse_backend = detect_sparse_backend(args.device)
+    sparse_backend = detect_sparse_backend(DEVICE)
     structure = recipe.prune.structure
-    structured_sparse = structure in ("2:4", "4:8", "2:4_pairwise")
-    hardware_sparse = structure in ("2:4", "2:4_pairwise")
+    structured_sparse = structure in ("2:4", "4:8")
+    hardware_sparse = structure in ("2:4", "4:8")
     allow_sparse = (
         hardware_sparse
         and bool(sparse_backend["available"])
@@ -456,7 +470,7 @@ def run_benchmark(recipe: CompressionRecipe, args: Any) -> int:
             print(
                 "OBR 4:8 is not representable by 4:8 sparse Tensor Cores; "
                 "joint uses dense INT4 (channel/tensor scales) or INT8. "
-                "Use 2:4_pairwise for hardware sparse acceleration.",
+                "Use --pairwise-fraction 1.0 for hardware sparse acceleration.",
                 file=sys.stderr,
                 flush=True,
             )
@@ -475,10 +489,12 @@ def run_benchmark(recipe: CompressionRecipe, args: Any) -> int:
     else:
         efficiency_regimes = ("dense", "quant")
 
-    paths = _regime_paths(recipe, Path(args.checkpoint_dir))
+    paths = _regime_paths(recipe, CHECKPOINT_DIR)
+    output_path = _benchmark_output_path(recipe, tasks)
     if args.dry_run:
         for name, path in paths.items():
             print(f"{name}: {path}")
+        print(f"output: {output_path}")
         return 0
 
     missing = [f"{name}: {path}" for name, path in paths.items() if not path.exists()]
@@ -519,8 +535,8 @@ def run_benchmark(recipe: CompressionRecipe, args: Any) -> int:
             metrics.update(
                 evaluate_regimes(
                     paths,
-                    manifest=args.manifest,
-                    device=args.device,
+                    manifest=MANIFEST_PATH,
+                    device=DEVICE,
                     tasks=accuracy_tasks,
                     ppl_datasets=tuple(
                         item.strip()
@@ -534,7 +550,7 @@ def run_benchmark(recipe: CompressionRecipe, args: Any) -> int:
                         for item in args.lm_eval_tasks.split(",")
                         if item.strip()
                     ),
-                    zeroshot_batch_size=args.lm_eval_batch_size,
+                    batch_size=recipe.batch_size,
                     seed=args.eval_seed,
                     allow_sparse=allow_sparse,
                     efficiency_regimes=efficiency_regimes,
@@ -545,14 +561,14 @@ def run_benchmark(recipe: CompressionRecipe, args: Any) -> int:
                 evaluate_inference(
                     recipe,
                     paths,
-                    manifest_path=args.manifest,
-                    device=args.device,
-                    batch=getattr(args, "e2e_batch", 1),
+                    manifest_path=MANIFEST_PATH,
+                    device=DEVICE,
+                    batch=recipe.batch_size,
                     prefill_len=args.e2e_seqlen,
                     decode_steps=args.e2e_decode_tokens,
                     warmup=args.e2e_warmup,
                     trials=args.e2e_iters,
-                    kv_bits=getattr(args, "e2e_kv_bits", None),
+                    kv_bits=None,
                     regimes=tuple(
                         item.strip()
                         for item in getattr(args, "e2e_regimes", "dense,quant,joint").split(",")
@@ -565,8 +581,8 @@ def run_benchmark(recipe: CompressionRecipe, args: Any) -> int:
     else:
         metrics = evaluate_regimes(
             paths,
-            manifest=args.manifest,
-            device=args.device,
+            manifest=MANIFEST_PATH,
+            device=DEVICE,
             tasks=tasks,
             ppl_datasets=tuple(
                 item.strip() for item in args.ppl_datasets.split(",") if item.strip()
@@ -576,7 +592,7 @@ def run_benchmark(recipe: CompressionRecipe, args: Any) -> int:
             zeroshot_tasks=tuple(
                 item.strip() for item in args.lm_eval_tasks.split(",") if item.strip()
             ),
-            zeroshot_batch_size=args.lm_eval_batch_size,
+            batch_size=recipe.batch_size,
             seed=args.eval_seed,
             e2e_seqlen=args.e2e_seqlen,
             e2e_decode_tokens=args.e2e_decode_tokens,
@@ -612,7 +628,7 @@ def run_benchmark(recipe: CompressionRecipe, args: Any) -> int:
         },
         "hardware": hardware_fingerprint(),
         "sparse_backend": sparse_backend,
-        "kernel_plan": kernel_plan(recipe, args.device, allow_sparse=allow_sparse),
+        "kernel_plan": kernel_plan(recipe, DEVICE, allow_sparse=allow_sparse),
         "graph": (
             "cuda_graph"
             if getattr(args, "engine", "hf") == "inference"
@@ -628,10 +644,10 @@ def run_benchmark(recipe: CompressionRecipe, args: Any) -> int:
     }
 
     if args.replace:
-        store = load_store(args.output)
+        store = load_store(output_path)
         store["runs"].pop(checkpoint_id, None)
-        write_store(args.output, store)
-    upsert_run(args.output, checkpoint_id, payload)
+        write_store(output_path, store)
+    upsert_run(output_path, checkpoint_id, payload)
     print(_summary(joint_path, payload), flush=True)
-    print(f"benchmarked {checkpoint_id} -> {args.output}", flush=True)
+    print(f"benchmarked {checkpoint_id} -> {output_path}", flush=True)
     return 0

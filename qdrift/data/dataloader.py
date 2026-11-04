@@ -19,7 +19,7 @@ __all__ = [
 ]
 
 CALIBRATION_DATASET = "wikitext2"
-PPL_DATASETS = ("wikitext2",)
+PPL_DATASETS = ("wikitext2", "c4")
 
 
 def _join_text(dataset: datasets.Dataset, key: str = "text") -> str:

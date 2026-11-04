@@ -5,23 +5,21 @@ and writes both the compressed checkpoints and a unified benchmark result file.
 
 Supported axes:
 
-- sparsity: `2:4` / `4:8` / `2:4_pairwise` require `0.5`; `unstructured` uses `--sparsity`; dense/quant baselines use no mask
-- pruning structure: `2:4`, `4:8` (OBR standard arbitrary N:M), `2:4_pairwise` (hardware sparse), `unstructured`
+- sparsity: `2:4` / `4:8` require `0.5`; `unstructured` uses `--sparsity`; dense/quant baselines use no mask
+- pruning structure: `2:4`, `4:8` (hybrid dense/pair) and `unstructured`
 - pruning criterion: WANDA, Q-WANDA, magnitude, random
 - weight/activation/KV granularity: per-tensor, per-channel, per-token, per-group
 - WAKV: weight/activation/KV 1-4 bit, with INT8 Tensor Core GEMM
 - 2:4 + INT4 weights (W4A16): Sparse-Marlin FP16xINT4 sparse kernel
-- 2:4_pairwise + INT4 weights/activations (W4A4, channel/tensor scales):
-  CUTLASS INT4 sparse Tensor Cores
-- 2:4 / 4:8 + INT4 weights/activations (W4A4, channel/tensor scales):
-  dense CUTLASS INT4 (OBR arbitrary N:M semantics; not representable by sparse INT4 hardware)
+- `2:4` / `4:8` + INT4 weights/activations (W4A4, channel/tensor scales):
+  dense CUTLASS INT4 for the dense fraction, CUTLASS INT4 sparse for the
+  pairwise fraction selected by `--pairwise-fraction`
 - 2:4 + INT1-3/8: CUTLASS INT8 sparse Tensor Cores (standard 2:4)
 
 Terminology:
 
-- **2:4** = any two of every four columns. This is the OBR accuracy semantics; arbitrary 2:4 is not representable by INT4 sparse Tensor Cores, but is the standard 2:4 layout for FP16/BF16/INT8 sparse MMA.
-- **4:8** = OBR-style arbitrary N:M: any four of every eight columns. Also accuracy-only for INT4 sparse hardware.
-- **2:4_pairwise** = one aligned 2-element pair per four columns; this is the INT4 sparse MMA layout. It is a subset of arbitrary 2:4, and CUTLASS packs two 4-column groups as 4:8 metadata.
+- **2:4 / 4:8** = OBR-style arbitrary N:M. The same names also select the hybrid mask policy: a `--pairwise-fraction` of their layers use the hardware pair layout, the rest use dense INT4.
+- **pairwise fraction** = fraction of least-sensitive layers using the hardware pair mask. `1.0` means all sparse pair layers; `0.0` means all dense N:M layers.
 - weight bits: 1-4 (1-3 stored as a little-endian bitstream, 4 as packed nibbles)
 - grid: mid-rise / mid-tread
 - range: full / clip-search
@@ -29,22 +27,33 @@ Terminology:
 - compensation: none / OBR / drift-OBR
 - rotation: fast Hadamard / none
 
+Default recipe follows OBR's setup: GPTQ, W4A4KV4, mid-tread, range-clip
+weights, per-channel weights and per-token activations/KV, WANDA, damping
+`0.1`, and `128×2048` calibration. Channel permutation is enabled by default.
+For structured `2:4` / `4:8`, `--pairwise-fraction` controls the fraction of
+least-sensitive layers using hardware pair masks:
+`1.0` = all pairwise/sparse, `0.0` = all dense N:M.
+
+For a pure OBR accuracy run, use:
+
+```bash
+scripts/compress.sh --structure 4:8 --pairwise-fraction 0.0 --no-channel-permutation
+```
+
 ## Sparse structures
 
 | structure | mask semantics | W4A4 kernel |
 |---|---|---|
-| `2:4` | any two of four columns | dense INT4 |
-| `4:8` | any four of eight columns | dense INT4 |
-| `2:4_pairwise` | one aligned pair per four columns | CUTLASS INT4 sparse |
+| `2:4` | hybrid of arbitrary 2:4 and 2:4 pairwise | dense INT4 / CUTLASS sparse |
+| `4:8` | hybrid of arbitrary 4:8 and 4:8 pairwise | dense INT4 / CUTLASS sparse |
 | `unstructured` | global top-k per output row | dense INT4/INT8 |
 
 `2:4` and `4:8` follow OBR's accuracy semantics. They are not representable by
-INT4 sparse Tensor Cores. Use `2:4_pairwise` when real sparse acceleration is
-required.
+INT4 sparse Tensor Cores. Use `--pairwise-fraction 1.0` when all structured
+layers should use the sparse pair layout.
 
 For `range=clip`, per-channel/per-tensor weight scales use OBR's MSE shrink
-search (100-grid, `maxshrink=0.8`, `L2.4`). Group scales still use
-`--clip-rhos`.
+search (100-grid, `maxshrink=0.8`, `L2.4`).
 
 ## Quick start
 
@@ -60,14 +69,13 @@ scripts/compress.sh
 scripts/bench.sh --tasks all
 
 # Hardware-sparse joint checkpoint only (CUTLASS INT4 sparse).
-scripts/compress.sh --structure 2:4_pairwise --w-gran channel \
-  --w-bits 4 --a-bits 4 --k-bits 4 --v-bits 4 --single
+scripts/compress.sh --structure 2:4 --pairwise-fraction 1.0 --w-gran channel \
+  --w-bits 4 --a-bits 4 --kv-bits 4 --single
 ```
 
-`scripts/compress.sh` and `scripts/bench.sh` are readable command templates.
-Edit the flags directly or append overrides on the command line.  Use
-`MODEL=llama2-7b` or `PYTHON=/path/to/python` to switch the model or interpreter
-without editing the scripts.
+`scripts/compress.sh` and `scripts/bench.sh` are thin wrappers around
+`python -m main`; all recipe defaults and argument construction live in
+`main.py`.  Pass `--model llama2-7b` or set `PYTHON=/path/to/python` when needed.
 
 Multi-GPU:
 
@@ -107,10 +115,10 @@ Use `--single` to write only the joint checkpoint.
 
 ## Results
 
-All benchmark tasks merge into one file:
+All benchmark tasks merge into one file under:
 
 ```text
-results/benchmarks.json
+results/benchmarks/<checkpoint_id>__<tasks>.json
 ```
 
 The unified benchmark loads each of the four real checkpoints once and reports:
@@ -143,13 +151,11 @@ CUDA_VISIBLE_DEVICES=2 python3 -m main benchmark \
   --model qwen2.5-0.5b \
   --structure 2:4 --sparsity 0.5 --criterion qwanda --lambda 0.4 \
   --w-bits 4 --w-gran channel \
-  --a-bits 16 --k-bits 16 --v-bits 16 \
-  --quant gptq --comp none --no-smooth --rotation none \
-  --checkpoint-dir checkpoints \
-  --tasks e2e --engine inference --e2e-batch 8 \
-  --e2e-seqlen 512 --e2e-decode-tokens 16 \
-  --e2e-warmup 2 --e2e-iters 5 \
-  --output results/benchmarks.json --replace
+  --a-bits 4 --kv-bits 4 \
+  --quant gptq --comp none --rotation none \
+  --tasks e2e --engine inference --batch-size 8 \
+  --e2e-seqlen 1024 --e2e-decode-tokens 64 \
+  --e2e-warmup 2 --e2e-iters 5 --replace
 ```
 
 If structured sparse acceleration is unavailable, the benchmark does not abort:
@@ -159,8 +165,9 @@ with dense/int fallbacks, and `dense`/`quant` e2e keeps running.  Use
 
 The inference engine consumes the four QDrift checkpoints and labels them
 `dense`, `sparse_fp16`, `int4_marlin`, `joint_sparse_int4`.  Use `--a-bits 4`
-checkpoints for the W4A4/joint-sparse-W4A4 path, and `--e2e-kv-bits 8|4` to
-enable fused quantized KV attention.  The default
+checkpoints for the W4A4/joint-sparse-W4A4 path.  KV precision comes from the
+checkpoint recipe (`--kv-bits`); the inference engine falls back to
+KV16 if they differ.  The default
 `--e2e-regimes dense,quant,joint` keeps only the effective paths.  The engine
 requires `--rotation none`; rotated checkpoints use `--engine hf`.  Reference
 results: `results/inference/REPORT.md`.

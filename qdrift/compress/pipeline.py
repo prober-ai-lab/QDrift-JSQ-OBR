@@ -24,7 +24,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TypeVar
 
@@ -35,6 +35,10 @@ from qdrift.compress.recipe import CompressionRecipe, variant_recipes
 from qdrift.data.dataloader import make_calibration_chunks
 from qdrift.data.tokenizer import load_tokenizer
 from qdrift.models.backbone import load_backbone, quantizable_linear_layers
+from qdrift.models.permutation import (
+    apply_channel_permutations,
+    build_channel_permutations,
+)
 from qdrift.models.rotation import (
     fuse_layer_norms,
     install_online_hadamards,
@@ -83,6 +87,61 @@ def _hessian_from_inputs(
         inputs = inputs * inverse_smooth.reshape(1, -1)
     hessian = inputs.t() @ inputs / max(inputs.shape[0], 1)
     return 0.5 * (hessian + hessian.t())
+
+
+_STREAM_HESSIAN_ELEMENTS = 1 << 29
+_HESSIAN_STREAM_ROWS = 8192
+
+
+@torch.no_grad()
+def _hessians_streaming(
+    fp_input: torch.Tensor,
+    compressed_input: torch.Tensor | None,
+    inverse_smooth: torch.Tensor | None,
+    damping: float,
+    shift_scale: float,
+    device: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    """Accumulate calibration Hessians without moving the full input to GPU."""
+    total = int(fp_input.shape[0])
+    width = int(fp_input.shape[-1])
+    hessian_fp = torch.zeros(width, width, device=device, dtype=torch.float32)
+    hessian_hat = (
+        torch.zeros_like(hessian_fp) if compressed_input is not None else None
+    )
+    cross = torch.zeros_like(hessian_fp) if compressed_input is not None else None
+    for start in range(0, total, _HESSIAN_STREAM_ROWS):
+        end = min(start + _HESSIAN_STREAM_ROWS, total)
+        zfp = fp_input[start:end].to(device=device, dtype=torch.float32)
+        if inverse_smooth is not None:
+            zfp = zfp * inverse_smooth.reshape(1, -1)
+        hessian_fp.add_(zfp.t() @ zfp)
+        if compressed_input is not None and hessian_hat is not None and cross is not None:
+            zhat = compressed_input[start:end].to(device=device, dtype=torch.float32)
+            if inverse_smooth is not None:
+                zhat = zhat * inverse_smooth.reshape(1, -1)
+            hessian_hat.add_(zhat.t() @ zhat)
+            cross.add_(zfp.t() @ zhat)
+            del zhat
+        del zfp
+    scale = max(total, 1)
+    hessian_fp.div_(scale)
+    if compressed_input is not None and hessian_hat is not None and cross is not None:
+        hessian_hat.div_(scale)
+        cross.div_(scale)
+        hessian_diff = shift_scale * (hessian_hat - cross)
+        hessian_system = (1.0 - shift_scale) * hessian_fp + shift_scale * hessian_hat
+    else:
+        hessian_diff = None
+        hessian_system = hessian_fp.clone()
+    damp = damping * torch.diagonal(hessian_system).clamp_min(0).mean()
+    hessian_system = hessian_system + damp * torch.eye(
+        hessian_system.shape[0],
+        device=hessian_system.device,
+        dtype=hessian_system.dtype,
+    )
+    hessian_system = 0.5 * (hessian_system + hessian_system.t())
+    return hessian_fp, hessian_system, hessian_diff
 
 
 def _score(
@@ -189,6 +248,7 @@ def _write_layer_mask(sink: Path, name: str, packed: torch.Tensor) -> None:
 def _quantize_layer(
     recipe: CompressionRecipe,
     qparams: tuple[int, int, float],
+    name: str | None,
     weight: torch.Tensor,
     weight_rot: torch.Tensor,
     smooth: torch.Tensor | None,
@@ -199,6 +259,9 @@ def _quantize_layer(
     drift_weight: torch.Tensor | None = None,
 ) -> LayerResult:
     rows, cols = weight.shape
+    # Scale is computed independently for this layer from the pre-mask rotated
+    # weight.  Do not reuse a global scale across layers, and do not rebuild it
+    # from the compensated retained values.
     full_scale = compute_scale(
         weight_rot,
         recipe.weight.bits,
@@ -231,11 +294,35 @@ def _quantize_layer(
         quant_error,
         recipe.prune.lam,
     )
-    mask = mask_from_score(
-        score,
-        recipe.prune.sparsity,
-        recipe.prune.structure,
-    )
+    base_structure = recipe.prune.structure
+    structure = base_structure
+    pairwise_ratio = None
+    if base_structure in ("2:4", "4:8"):
+        pair_structure = f"{base_structure}_pairwise"
+        if name is not None and recipe.pairwise_layers:
+            structure = pair_structure if name in recipe.pairwise_layers else base_structure
+        elif recipe.pairwise_fraction >= 1.0:
+            structure = pair_structure
+        elif recipe.pairwise_fraction <= 0.0:
+            structure = base_structure
+        else:
+            dense_mask = mask_from_score(score, recipe.prune.sparsity, base_structure)
+            pair_mask = mask_from_score(score, recipe.prune.sparsity, pair_structure)
+            dense_loss = score.masked_fill(dense_mask, 0).sum()
+            pair_loss = score.masked_fill(pair_mask, 0).sum()
+            pairwise_ratio = float(pair_loss / dense_loss.clamp_min(1e-12))
+            structure = (
+                pair_structure
+                if pairwise_ratio <= recipe.pairwise_threshold
+                else base_structure
+            )
+        mask = mask_from_score(score, recipe.prune.sparsity, structure)
+    else:
+        mask = mask_from_score(
+            score,
+            recipe.prune.sparsity,
+            base_structure,
+        )
     keep, _drop = split_mask(mask)
     full_layout = (
         recipe.weight.method == "gptq"
@@ -412,6 +499,8 @@ def _quantize_layer(
         "code_encoding": code_encoding,
         "nnz": int(mask.sum().item()),
         "smooth_alpha": recipe.smoothing.alpha,
+        "structure": structure,
+        "pairwise_ratio": pairwise_ratio,
     }
     return LayerResult(
         tensors=tensors,
@@ -426,6 +515,7 @@ def _quantize_layer(
 def _process_full_layer(
     recipe: CompressionRecipe,
     qparams: tuple[int, int, float],
+    name: str | None,
     weight: torch.Tensor,
     fp_input: torch.Tensor | None,
     compressed_input: torch.Tensor | None,
@@ -434,31 +524,57 @@ def _process_full_layer(
 ) -> LayerResult:
     torch.cuda.set_device(device)
     local_weight = weight.detach().float().to(device)
-    local_fp = fp_input.to(device) if fp_input is not None else None
-    local_hat = compressed_input.to(device) if compressed_input is not None else None
-    smooth = _smooth_for_layer(
-        local_weight,
-        local_fp,
-        recipe.smoothing.alpha,
-    )
+    local_fp = None
+    local_hat = None
+    if recipe.smoothing.alpha is not None and fp_input is not None:
+        activation_max = fp_input.abs().amax(dim=0).to(device)
+        smooth = smooth_scale(
+            activation_max,
+            channel_max(local_weight),
+            recipe.smoothing.alpha,
+        )
+    else:
+        smooth = None
     inverse_smooth = smooth.reciprocal() if smooth is not None else None
     weight_smoothed = (
         smooth_weight(local_weight, smooth) if smooth is not None else local_weight
     )
     if need_hessian:
-        hessian_fp, hessian_system, hessian_diff = _hessians(
-            local_fp,
-            local_hat,
-            inverse_smooth,
-            recipe.compensation.damping,
-            recipe.compensation.shift_scale,
-        )
-        hessian_raw = hessian_system
+        if fp_input is not None and fp_input.numel() > _STREAM_HESSIAN_ELEMENTS:
+            hessian_fp, hessian_system, hessian_diff = _hessians_streaming(
+                fp_input,
+                compressed_input,
+                inverse_smooth,
+                recipe.compensation.damping,
+                recipe.compensation.shift_scale,
+                device,
+            )
+            hessian_raw = hessian_system
+        else:
+            local_fp = (
+                fp_input.to(device=device, dtype=torch.float32)
+                if fp_input is not None
+                else None
+            )
+            local_hat = (
+                compressed_input.to(device=device, dtype=torch.float32)
+                if compressed_input is not None
+                else None
+            )
+            hessian_fp, hessian_system, hessian_diff = _hessians(
+                local_fp,
+                local_hat,
+                inverse_smooth,
+                recipe.compensation.damping,
+                recipe.compensation.shift_scale,
+            )
+            hessian_raw = hessian_system
     else:
         hessian_fp = hessian_system = hessian_raw = hessian_diff = None
     result = _quantize_layer(
         recipe,
         qparams,
+        name,
         local_weight,
         weight_smoothed,
         smooth,
@@ -475,6 +591,7 @@ def _process_full_layer(
 def _process_row_slice(
     recipe: CompressionRecipe,
     qparams: tuple[int, int, float],
+    name: str | None,
     weight_rows: torch.Tensor,
     smooth: torch.Tensor | None,
     hessian_fp: torch.Tensor | None,
@@ -500,6 +617,7 @@ def _process_row_slice(
     result = _quantize_layer(
         recipe,
         qparams,
+        name,
         local_weight,
         weight_smoothed,
         local_smooth,
@@ -577,6 +695,43 @@ def _merge_slices(results: list[LayerResult]) -> LayerResult:
     )
 
 
+@torch.no_grad()
+def _pairwise_sensitivity(
+    model: torch.nn.Module,
+    groups,
+    layers: dict[str, torch.nn.Linear],
+    sequential: SequentialCalibration,
+    device: str,
+    base_structure: str,
+) -> dict[str, float]:
+    """Cheap pair-vs-dense sensitivity ranking from WANDA score loss."""
+    ratios: dict[str, float] = {}
+    for group in groups:
+        inputs = sequential.capture(group.capture)
+        if inputs.numel() == 0:
+            continue
+        values = inputs.to(device=device, dtype=torch.float32)
+        diag = values.pow(2).mean(dim=0).clamp_min(0).sqrt().reshape(1, -1)
+        for name in group.names:
+            weight = layers[name].weight.data.float().to(device)
+            score = weight.abs() * diag
+            dense_mask = mask_from_score(score, 0.5, base_structure)
+            pair_mask = mask_from_score(score, 0.5, f"{base_structure}_pairwise")
+            dense_loss = score.masked_fill(dense_mask, 0).sum()
+            pair_loss = score.masked_fill(pair_mask, 0).sum()
+            ratios[name] = float(pair_loss / dense_loss.clamp_min(1e-12))
+    return ratios
+
+
+def _batch_chunks(chunks: list[torch.Tensor], batch_size: int) -> list[torch.Tensor]:
+    if batch_size <= 1 or not chunks:
+        return chunks
+    return [
+        torch.stack(chunks[start : start + batch_size])
+        for start in range(0, len(chunks), batch_size)
+    ]
+
+
 def compress(
     recipe: CompressionRecipe,
     manifest_path: str = "modelzoo/manifest.yaml",
@@ -607,6 +762,7 @@ def compress(
         device=main_device,
     )
     tokenizer = load_tokenizer(recipe.model, manifest_path)
+    permutations = None
     if recipe.rotation.mode != "none":
         fuse_layer_norms(model)
         torch.manual_seed(recipe.rotation.seed)
@@ -618,7 +774,15 @@ def compress(
             main_device,
             recipe.rotation.seed,
         )
-        install_online_hadamards(model)
+    if recipe.channel_permutation:
+        permutations = build_channel_permutations(model)
+        apply_channel_permutations(model, permutations)
+    if recipe.rotation.mode != "none":
+        install_online_hadamards(
+            model,
+            permutations.o if permutations is not None else None,
+            permutations.down if permutations is not None else None,
+        )
     layers = quantizable_linear_layers(model)
     if recipe.max_layers > 0:
         selected = list(layers)[: recipe.max_layers]
@@ -629,6 +793,7 @@ def compress(
         seqlen=recipe.seqlen,
         seed=recipe.rotation.seed,
     )
+    chunks = _batch_chunks(chunks, recipe.batch_size)
     groups = layer_groups(model, layers)
 
     need_hessian = (
@@ -653,6 +818,43 @@ def compress(
         )
         fp_inputs = calibration.inputs
         sequential = SequentialCalibration(model, calibration)
+        if (
+            recipe.prune.structure in ("2:4", "4:8")
+            and 0.0 < recipe.pairwise_fraction < 1.0
+        ):
+            ratios = _pairwise_sensitivity(
+                model,
+                groups,
+                layers,
+                sequential,
+                main_device,
+                recipe.prune.structure,
+            )
+            count = len(ratios)
+            pair_count = min(
+                max(int(round(recipe.pairwise_fraction * count)), 0),
+                count,
+            )
+            if pair_count <= 0:
+                threshold = float("-inf")
+            elif pair_count >= count:
+                threshold = float("inf")
+            else:
+                ordered = sorted(ratios.values())
+                threshold = ordered[pair_count - 1] + 1e-9
+            ordered_names = sorted(ratios, key=ratios.get)
+            recipe = replace(
+                recipe,
+                pairwise_threshold=threshold,
+                pairwise_layers=tuple(ordered_names[:pair_count]),
+            )
+            print(
+                f"pairwise fraction: {pair_count}/{count} "
+                f"threshold={threshold:.6g}",
+                flush=True,
+            )
+            # Re-run calibration from the start; the sensitivity pass only read inputs.
+            sequential = SequentialCalibration(model, calibration)
 
     qparams = qrange(recipe.weight.bits, recipe.weight.grid)
     tensors: dict[str, torch.Tensor] = {}
@@ -680,12 +882,8 @@ def compress(
                     chunks,
                     main_device,
                 )[group.capture]
-            calibrated = calibrated.to(device=main_device, dtype=torch.float32)
             if recipe.compensation.method == "drift":
-                fp_input = fp_inputs[group.capture].to(
-                    device=main_device,
-                    dtype=torch.float32,
-                )
+                fp_input = fp_inputs[group.capture]
                 compressed_input = calibrated
             else:
                 fp_input = calibrated
@@ -701,6 +899,7 @@ def compress(
                         _process_full_layer(
                             recipe,
                             qparams,
+                            name,
                             layer_weight,
                             fp_input,
                             compressed_input,
@@ -728,6 +927,8 @@ def compress(
                 print(
                     f"[{index}/{total}] {name} "
                     f"nnz={result.meta['nnz']} "
+                    f"structure={result.meta.get('structure', recipe.prune.structure)} "
+                    f"pairwise_ratio={result.meta.get('pairwise_ratio')} "
                     f"elapsed={time.time() - start:.1f}s",
                     flush=True,
                 )
@@ -736,6 +937,10 @@ def compress(
             and len(names) == 1
             and recipe.weight.granularity.kind != "tensor"
             and layers[names[0]].in_features <= 4096
+            and not (
+                recipe.prune.structure in ("2:4", "4:8")
+                and 0.0 < recipe.pairwise_fraction < 1.0
+            )
         ):
             name = names[0]
             weight = layers[name].weight.data.detach().float().to(main_device)
@@ -773,6 +978,7 @@ def compress(
                     _process_row_slice(
                         recipe,
                         qparams,
+                        name,
                         weight[start_row:end_row],
                         smooth,
                         hessian_fp,
@@ -823,6 +1029,7 @@ def compress(
                 result = _process_full_layer(
                     recipe,
                     qparams,
+                    name,
                     layers[name].weight.data,
                     fp_input,
                     compressed_input,
@@ -846,6 +1053,8 @@ def compress(
                 print(
                     f"[{index}/{total}] {name} "
                     f"nnz={result.meta['nnz']} "
+                    f"structure={result.meta.get('structure', recipe.prune.structure)} "
+                    f"pairwise_ratio={result.meta.get('pairwise_ratio')} "
                     f"elapsed={time.time() - start:.1f}s",
                     flush=True,
                 )
@@ -860,6 +1069,8 @@ def compress(
     save_file(tensors, str(tensor_path))
 
     config = recipe.base_config()
+    if permutations is not None:
+        config["permutation"] = permutations.to_dict()
     config["layout"] = {
         "pack_axis": "in_features",
         "bit_order": "lsb_first",
@@ -1040,13 +1251,22 @@ def write_fp16_baseline(
         raise ValueError("sparse baseline requires joint_checkpoint or mask_dir")
 
     model = load_backbone(recipe.model, manifest_path, device=device)
+    permutations = None
     if recipe.rotation.mode != "none":
         fuse_layer_norms(model)
         torch.manual_seed(recipe.rotation.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(recipe.rotation.seed)
         rotate_model(model, recipe.rotation.mode, device, recipe.rotation.seed)
-        install_online_hadamards(model)
+    if recipe.channel_permutation:
+        permutations = build_channel_permutations(model)
+        apply_channel_permutations(model, permutations)
+    if recipe.rotation.mode != "none":
+        install_online_hadamards(
+            model,
+            permutations.o if permutations is not None else None,
+            permutations.down if permutations is not None else None,
+        )
 
     tensors: dict[str, torch.Tensor] = {}
     layers: dict[str, dict[str, object]] = {}
@@ -1092,6 +1312,8 @@ def write_fp16_baseline(
         }
 
     config = recipe.base_config()
+    if permutations is not None:
+        config["permutation"] = permutations.to_dict()
     config["layout"] = {
         "value_layout": "fp16_compacted",
         "scale_layout": "none",
