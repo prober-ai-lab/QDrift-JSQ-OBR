@@ -93,32 +93,27 @@ def _hessians_streaming(
     """Accumulate the mask/system Hessian and the asymmetric drift matrix."""
     total = int(fp_input.shape[0])
     width = int(fp_input.shape[-1])
-    if compressed_input is None:
-        hessian = torch.zeros(width, width, device=device, dtype=torch.float32)
-        for start in range(0, total, _HESSIAN_STREAM_ROWS):
-            end = min(start + _HESSIAN_STREAM_ROWS, total)
+    # The mask/system Hessian uses the compressed path when it is available.
+    source = compressed_input if compressed_input is not None else fp_input
+    hessian = torch.zeros(width, width, device=device, dtype=torch.float32)
+    hessian_diff = (
+        torch.zeros_like(hessian) if compressed_input is not None else None
+    )
+    for start in range(0, total, _HESSIAN_STREAM_ROWS):
+        end = min(start + _HESSIAN_STREAM_ROWS, total)
+        zhat = source[start:end].to(device=device, dtype=torch.float32)
+        hessian.add_(zhat.t() @ zhat)
+        if hessian_diff is not None:
             zfp = fp_input[start:end].to(device=device, dtype=torch.float32)
-            hessian.add_(zfp.t() @ zfp)
-            del zfp
-        hessian.div_(max(total, 1))
-        hessian_system = hessian
-        hessian_diff = None
-        mask_hessian = hessian
-    else:
-        hessian = torch.zeros(width, width, device=device, dtype=torch.float32)
-        hessian_diff = torch.zeros_like(hessian)
-        for start in range(0, total, _HESSIAN_STREAM_ROWS):
-            end = min(start + _HESSIAN_STREAM_ROWS, total)
-            zfp = fp_input[start:end].to(device=device, dtype=torch.float32)
-            zhat = compressed_input[start:end].to(device=device, dtype=torch.float32)
-            hessian.add_(zhat.t() @ zhat)
             hessian_diff.add_((zhat - zfp).t() @ zhat)
-            del zfp, zhat
-        scale = max(total, 1)
-        hessian.div_(scale)
+            del zfp
+        del zhat
+    scale = max(total, 1)
+    hessian.div_(scale)
+    if hessian_diff is not None:
         hessian_diff.div_(scale)
-        hessian_system = hessian
-        mask_hessian = hessian
+    hessian_system = hessian
+    mask_hessian = hessian
     damp = damping * torch.diagonal(hessian_system).clamp_min(0).mean()
     hessian_system = hessian_system + damp * torch.eye(
         hessian_system.shape[0],
@@ -127,6 +122,7 @@ def _hessians_streaming(
     )
     hessian_system = 0.5 * (hessian_system + hessian_system.t())
     return mask_hessian, hessian_system, hessian_diff
+
 
 def _score(
     criterion: str,
@@ -180,7 +176,7 @@ def _hessians(
     else:
         hessian_fp = _hessian_from_inputs(fp_input)
         hessian_diff = None
-        hessian_system = hessian_fp.clone()
+        hessian_system = hessian_fp
         mask_hessian = hessian_fp
     damp = damping * torch.diagonal(hessian_system).clamp_min(0).mean()
     hessian_system = hessian_system + damp * torch.eye(
@@ -557,7 +553,10 @@ def _process_row_slice(
     local_weight = weight_rows.detach().float().to(device)
     local_fp = hessian_fp.to(device) if hessian_fp is not None else None
     local_system = hessian_system.to(device) if hessian_system is not None else None
-    local_raw = hessian_raw.to(device) if hessian_raw is not None else None
+    if hessian_raw is hessian_system:
+        local_raw = local_system
+    else:
+        local_raw = hessian_raw.to(device) if hessian_raw is not None else None
     local_diff = hessian_diff.to(device) if hessian_diff is not None else None
     local_drift = drift_weight.to(device) if drift_weight is not None else None
     result = _quantize_layer(
@@ -1277,8 +1276,10 @@ def write_fp16_baseline(
     layer_names = _layer_names(model, recipe.max_layers)
     group_layers = {name: modules[name] for name in layer_names}
     groups = layer_groups(model, group_layers)
-    calibration_inputs: dict[str, torch.Tensor] | None = None
-    if use_joint_mask:
+    need_calibration = use_joint_mask and recipe.compensation.method != "none"
+    chunks: list[torch.Tensor] = []
+    sequential: SequentialCalibration | None = None
+    if need_calibration:
         tokenizer = load_tokenizer(recipe.model, manifest_path)
         chunks = make_calibration_chunks(
             tokenizer,
@@ -1286,12 +1287,12 @@ def write_fp16_baseline(
             seqlen=recipe.seqlen,
             seed=recipe.rotation.seed,
         )
-        capture_names = sorted({group.capture for group in groups})
-        calibration_inputs = capture_inputs(
+        chunks = _batch_chunks(chunks, recipe.batch_size)
+        # Replay decoder blocks sequentially so each group sees the inputs of
+        # the already-pruned prefix, and only one group's inputs are resident.
+        sequential = SequentialCalibration(
             model,
-            capture_names,
-            chunks,
-            device,
+            capture_calibration_start(model, [], chunks, device),
         )
 
     tensors: dict[str, torch.Tensor] = {}
@@ -1300,13 +1301,22 @@ def write_fp16_baseline(
     # group Hessian resident is O(num_layers * hidden^2) and OOMs on 7B models.
     for group in groups:
         hessian = None
-        if calibration_inputs is not None:
+        if sequential is not None:
+            calibrated = sequential.capture(group.capture)
+            if calibrated.numel() == 0:
+                calibrated = capture_inputs(
+                    model,
+                    [group.capture],
+                    chunks,
+                    device,
+                )[group.capture]
             _, hessian, _ = _hessians_streaming(
-                calibration_inputs[group.capture],
+                calibrated,
                 None,
                 recipe.compensation.damping,
                 device,
             )
+            del calibrated
         for name in group.names:
             layer = modules[name]
             rows = int(layer.weight.shape[0])
@@ -1338,7 +1348,7 @@ def write_fp16_baseline(
             )[:, :kept]
             # The sparse baseline only performs OBR pruning compensation.  It
             # never quantizes and never runs quantization compensation.
-            if hessian is not None and recipe.compensation.method != "none":
+            if hessian is not None:
                 state = compensate_pruning_error(
                     weight,
                     hessian,
@@ -1348,6 +1358,13 @@ def write_fp16_baseline(
                     alpha=recipe.compensation.alpha,
                 )
                 retained_values = state.retained
+                # Write the compensated sparse weight back so later groups
+                # calibrate on the pruned prefix, as in ``compress``.
+                layer.weight.data = (
+                    torch.zeros_like(weight)
+                    .scatter_(1, keep, retained_values)
+                    .to(dtype=layer.weight.dtype)
+                )
             else:
                 retained_values = weight.gather(1, keep)
             retained = retained_values.to(torch.float16).cpu().contiguous()

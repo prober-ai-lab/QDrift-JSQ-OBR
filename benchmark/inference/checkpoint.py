@@ -90,6 +90,11 @@ def build_checkpoint_model(
     spec = ModelSpec.from_dir(source)
     store = SafetensorStore(source)
     tensors = load_file(str(checkpoint))
+    if any(key.endswith(".weight_smooth_scale") for key in tensors):
+        raise ValueError(
+            "checkpoint uses smoothing, which is no longer supported; "
+            "recompress it with the current pipeline"
+        )
     make_linear_layer = linear_factory or _linear
 
     embed_weight = store.get("model.embed_tokens.weight", device).half()

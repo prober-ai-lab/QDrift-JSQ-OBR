@@ -21,11 +21,14 @@ def _hessian_inverse(hessian: torch.Tensor, damp: float) -> torch.Tensor:
     n = hessian.shape[0]
     eye = torch.eye(n, device=hessian.device, dtype=hessian.dtype)
     damped = hessian.float() + damp * eye
-    try:
+    factor, info = torch.linalg.cholesky_ex(damped)
+    if int(info.item()) != 0:
+        # Not positive definite: retry with a small relative diagonal damping
+        # so both the inverse and its upper Cholesky factor exist.
+        jitter = 1e-2 * torch.diagonal(damped).abs().mean().clamp_min(1e-8)
+        damped = damped + jitter * eye.float()
         factor = torch.linalg.cholesky(damped)
-        hinv = torch.cholesky_inverse(factor)
-    except torch.linalg.LinAlgError:
-        hinv = torch.linalg.inv(damped)
+    hinv = torch.cholesky_inverse(factor)
     return torch.linalg.cholesky(hinv, upper=True).to(hessian.dtype)
 
 

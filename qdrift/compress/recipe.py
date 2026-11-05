@@ -559,10 +559,11 @@ def sparse_recipe(recipe: CompressionRecipe) -> CompressionRecipe:
     The sparse baseline applies OBR pruning compensation only.  It must not
     quantize weights/activations and must not run quantization compensation.
     """
-    return replace(
-        fp16_recipe(recipe, recipe.prune.sparsity, recipe.prune.structure),
-        compensation=replace(recipe.compensation, method="obr"),
-    )
+    sparse = fp16_recipe(recipe, recipe.prune.sparsity, recipe.prune.structure)
+    if sparse.checkpoint_id() == dense_recipe(recipe).checkpoint_id():
+        # Nothing is pruned: keep the dense baseline id so callers reuse it.
+        return sparse
+    return replace(sparse, compensation=replace(recipe.compensation, method="obr"))
 
 
 def variant_recipes(

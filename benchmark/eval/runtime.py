@@ -537,6 +537,13 @@ def load_runtime_model(
     recipe = CompressionRecipe.from_config(config)
 
     tensors = load_file(str(checkpoint))
+    if config.get("permutation") or any(
+        key.endswith(".weight_smooth_scale") for key in tensors
+    ):
+        raise ValueError(
+            "checkpoint uses channel permutation or smoothing, which are no "
+            "longer supported; recompress it with the current pipeline"
+        )
     model = load_backbone(
         recipe.model,
         manifest_path,
