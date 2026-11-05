@@ -98,10 +98,9 @@ def build_checkpoint_model(
     make_linear_layer = linear_factory or _linear
 
     embed_weight = store.get("model.embed_tokens.weight", device).half()
-    embed_tokens = nn.Embedding(
-        spec.vocab_size, spec.hidden_size, device=device, dtype=torch.float16
-    )
-    embed_tokens.weight = nn.Parameter(embed_weight, requires_grad=False)
+    # from_pretrained skips random init, which would otherwise draw from the
+    # CUDA RNG (and fail if an earlier graph capture left it mid-capture).
+    embed_tokens = nn.Embedding.from_pretrained(embed_weight, freeze=True)
 
     max_len = prefill_len + decode_steps + 1
     rotary = RotaryEmbedding(spec.head_dim, spec.rope_theta, max_len, device)

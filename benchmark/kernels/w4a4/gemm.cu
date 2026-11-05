@@ -2,6 +2,7 @@
 // Adapted from: https://github.com/spcl/QuaRot (commit 5008669b08c1f11f9b64d52d16fddd47ca754c5a)
 #include <cutlass/gemm/device/gemm.h>
 #include <gemm.h>
+#include <c10/cuda/CUDAStream.h>
 
 
 
@@ -40,7 +41,7 @@ void matmul_host(
             {1,                                0}
     };
 
-    auto status = gemmOp(arguments);
+    auto status = gemmOp(arguments, nullptr, c10::cuda::getCurrentCUDAStream());
 
     ensure(status == cutlass::Status::kSuccess,
            cutlassGetStatusString(status));

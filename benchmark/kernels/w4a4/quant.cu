@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Adapted from: https://github.com/spcl/QuaRot (commit 5008669b08c1f11f9b64d52d16fddd47ca754c5a)
 #include <quant.h>
+#include <c10/cuda/CUDAStream.h>
 
 
 template<typename T>
@@ -59,7 +60,7 @@ void sym_quant_host(
 
     dim3 block{std::min<uint32_t>(colsDst, 32), std::min<uint32_t>(rows, 16)};
     dim3 grid{cdiv(colsDst, block.x), cdiv(rows, block.y)};
-    sym_quantize_f16_i4_kernel<<<grid, block>>>(x, scale, rows, colsSrc, colsDst, q);
+    sym_quantize_f16_i4_kernel<<<grid, block, 0, c10::cuda::getCurrentCUDAStream()>>>(x, scale, rows, colsSrc, colsDst, q);
 }
 
 
@@ -92,7 +93,7 @@ void sym_dequant_host(const int32_t *q,
 {
     dim3 block{std::min<uint32_t>(cols, 16), std::min<uint32_t>(rows, 16)};
     dim3 grid{cdiv(cols, block.x), cdiv(rows, block.y)};
-    sym_dequantize_i32_f16_kernel<<<grid, block>>>(
+    sym_dequantize_i32_f16_kernel<<<grid, block, 0, c10::cuda::getCurrentCUDAStream()>>>(
             q,
             scale_row, scale_col,
             rows, cols, x);

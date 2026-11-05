@@ -383,7 +383,12 @@ def make_regime_case(
         case.int8_weight is not None
         and recipe.weight.bits <= 4
         and recipe.activation.bits < 16
-        and recipe.prune.structure in ("2:4", "4:8", "2:4_pairwise", "4:8_pairwise")
+        # The unpruned quant regime uses the same dense INT4 kernel.
+        and (
+            regime == "quant"
+            or recipe.prune.structure
+            in ("2:4", "4:8", "2:4_pairwise", "4:8_pairwise")
+        )
         and granularity.kind in ("tensor", "channel")
     ):
         if sparse_pairwise:

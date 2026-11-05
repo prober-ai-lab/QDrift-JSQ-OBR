@@ -23,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 
+#include <c10/cuda/CUDAStream.h>
 #include <cuda_fp16.h>
 #include <cutlass/cutlass.h>
 #include <cutlass/gemm/device/gemm_sparse.h>
@@ -93,7 +94,7 @@ void sparse_matmul_host(
     size_t workspace_size = SparseGemm::get_workspace_size(arguments);
     cutlass::device_memory::allocation<uint8_t> workspace(workspace_size);
     check(gemm_op.initialize(arguments, workspace.get()), "sparse GEMM init");
-    check(gemm_op(), "sparse GEMM run");
+    check(gemm_op(c10::cuda::getCurrentCUDAStream()), "sparse GEMM run");
 }
 
 // Reorder row-major [rows, K/64] metadata into the ldmatrix layout.  The
@@ -187,6 +188,6 @@ void sparse_dequant_host(
     dim3 blocks(
         (out_features + kDequantTile - 1) / kDequantTile,
         (rows + kDequantTile - 1) / kDequantTile);
-    dequant_sparse_kernel<<<blocks, threads>>>(
+    dequant_sparse_kernel<<<blocks, threads, 0, c10::cuda::getCurrentCUDAStream()>>>(
         acc, a_scale, w_scale, out, rows, out_features);
 }

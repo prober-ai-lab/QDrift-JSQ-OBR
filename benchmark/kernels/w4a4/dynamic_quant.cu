@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Fused per-token scale + INT4 packing for the QuaRot CUTLASS GEMM.
 #include <common.h>
+#include <c10/cuda/CUDAStream.h>
 
 __global__ void sym_quant_dynamic_kernel(
     const half* __restrict__ x,
@@ -58,5 +59,5 @@ void sym_quant_dynamic_host(
     half* scale,
     Int4Storage* q
 ) {
-    sym_quant_dynamic_kernel<<<rows, 256>>>(x, rows, cols, clip_ratio, scale, q);
+    sym_quant_dynamic_kernel<<<rows, 256, 0, c10::cuda::getCurrentCUDAStream()>>>(x, rows, cols, clip_ratio, scale, q);
 }
