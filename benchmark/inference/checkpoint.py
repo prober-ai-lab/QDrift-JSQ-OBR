@@ -64,10 +64,7 @@ def _linear(
         out_features=case.out_features,
         bias=None,
     )
-    smooth = tensors.get(f"{name}.weight_smooth_scale")
-    if smooth is not None:
-        smooth = smooth.to(device=device, dtype=torch.float16)
-    return CompressedLinear(original, case, regime, recipe, smooth)
+    return CompressedLinear(original, case, regime, recipe)
 
 
 @torch.no_grad()

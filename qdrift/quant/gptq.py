@@ -23,9 +23,10 @@ def _hessian_inverse(hessian: torch.Tensor, damp: float) -> torch.Tensor:
     damped = hessian.float() + damp * eye
     try:
         factor = torch.linalg.cholesky(damped)
-        return torch.cholesky_inverse(factor).to(hessian.dtype)
+        hinv = torch.cholesky_inverse(factor)
     except torch.linalg.LinAlgError:
-        return torch.linalg.inv(damped).to(hessian.dtype)
+        hinv = torch.linalg.inv(damped)
+    return torch.linalg.cholesky(hinv, upper=True).to(hessian.dtype)
 
 
 @torch.no_grad()

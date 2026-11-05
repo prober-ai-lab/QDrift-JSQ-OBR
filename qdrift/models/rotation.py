@@ -188,43 +188,22 @@ def rotate_model(
         rotate_mlp(layer, q)
 
 
-def install_online_hadamards(
-    model: torch.nn.Module,
-    o_permutation: torch.Tensor | None = None,
-    down_permutation: torch.Tensor | None = None,
-) -> None:
+def install_online_hadamards(model: torch.nn.Module) -> None:
     """Install the runtime Hadamards that cannot be fused into weights.
 
     Attention V/O: V gets H_head per head, O gets full H_hidden.  The online
     O transform applies H_head per head and then H_hidden, so the two full
     Hadamards cancel.  MLP down: the activation follows SiLU, so apply H_full
-    online.  Optional channel permutations are gathered *after* these Hadamard
-    transforms; that keeps P from having to commute with H.
+    online.
     """
     config = model.config
     num_heads = config.num_attention_heads
     head_dim = config.hidden_size // num_heads
-    o_index = None if o_permutation is None else o_permutation.to(torch.long)
-    down_index = None if down_permutation is None else down_permutation.to(torch.long)
-    o_cache: dict[torch.device, torch.Tensor] = {}
-    down_cache: dict[torch.device, torch.Tensor] = {}
-
-    def _cached_index(index: torch.Tensor, cache: dict[torch.device, torch.Tensor], device: torch.device) -> torch.Tensor:
-        value = cache.get(device)
-        if value is None:
-            value = index.to(device)
-            cache[device] = value
-        return value
 
     def down_hook(module, inputs):
         if not inputs:
             return None
         work = matmul_hadU(inputs[0])
-        if down_index is not None:
-            work = work.index_select(
-                -1,
-                _cached_index(down_index, down_cache, work.device),
-            )
         return (work,) + inputs[1:]
 
     def o_hook(module, inputs):
@@ -235,11 +214,6 @@ def install_online_hadamards(
         work = value.reshape(*shape[:-1], num_heads, head_dim)
         work = matmul_hadU(work)  # H_head per head
         work = matmul_hadU(work.reshape(shape))  # H_hidden
-        if o_index is not None:
-            work = work.index_select(
-                -1,
-                _cached_index(o_index, o_cache, work.device),
-            )
         return (work,) + inputs[1:]
 
     for layer in model.model.layers:

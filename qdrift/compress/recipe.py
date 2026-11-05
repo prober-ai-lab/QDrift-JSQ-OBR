@@ -8,7 +8,7 @@ A checkpoint id is built from the axes that define an experiment:
     [_{agran}][_{kvgran}]__{compensation}[__h{hash}]
 
 Example:
-    qwen2.5-0.5b__0.5w4a4kv4__qwanda0.4_mr_rc_rtn_pg128_an_kn__drift
+    qwen2.5-0.5b__0.5w4a4kv4__qwanda0.7_mr_rc_rtn_pg128_an_kn__drift
 
 The trailing ``h{hash}`` is only added when a knob that is not encoded in the
 readable part differs from its default (rotation seed, exact clip set, ...).
@@ -231,7 +231,7 @@ class PruneSpec:
     sparsity: float = 0.5
     structure: str = "4:8"
     criterion: str = "wanda"
-    lam: float = 0.4
+    lam: float = 0.7
 
     def validate(self) -> None:
         if self.sparsity not in SPARSITY_VALUES:
@@ -270,7 +270,7 @@ class PruneSpec:
             sparsity=round(float(data.get("sparsity", data.get("ratio", 0.5))), 1),
             structure=str(data.get("structure", "4:8")),
             criterion=str(data.get("criterion", "wanda")),
-            lam=float(data.get("lambda", 0.4)),
+            lam=float(data.get("lambda", 0.7)),
         )
 
 
@@ -297,39 +297,18 @@ class RotationSpec:
 
 
 @dataclass(frozen=True)
-class SmoothSpec:
-    """Per-input-channel smoothing."""
-
-    alpha: float | None = None
-
-    def validate(self) -> None:
-        if self.alpha is not None and not 0.0 <= self.alpha <= 1.0:
-            raise ValueError("smooth alpha must be None or in [0, 1]")
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"alpha": self.alpha}
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> SmoothSpec:
-        return cls(alpha=data.get("alpha", None))
-
-
-@dataclass(frozen=True)
 class CompensationSpec:
     """OBR / DriftOBR compensation."""
 
     method: str = "obr"
     alpha: float = 0.5
-    shift_scale: float = 1.0
-    damping: float = 0.1
+    damping: float = 0.01
 
     def validate(self) -> None:
         if self.method not in ("none", "obr", "drift"):
             raise ValueError(f"unknown compensation method {self.method}")
         if not 0.0 <= self.alpha <= 1.0:
             raise ValueError("compensation alpha must be in [0, 1]")
-        if self.shift_scale < 0.0:
-            raise ValueError("shift_scale must be non-negative")
         if self.damping < 0.0:
             raise ValueError("damping must be non-negative")
 
@@ -337,7 +316,6 @@ class CompensationSpec:
         return {
             "method": self.method,
             "alpha": self.alpha,
-            "shift_scale": self.shift_scale,
             "damping": self.damping,
         }
 
@@ -346,8 +324,7 @@ class CompensationSpec:
         return cls(
             method=str(data.get("method", "obr")),
             alpha=float(data.get("alpha", 0.5)),
-            shift_scale=float(data.get("shift_scale", 1.0)),
-            damping=float(data.get("damping", 0.1)),
+            damping=float(data.get("damping", 0.01)),
         )
 
 
@@ -361,13 +338,11 @@ class CompressionRecipe:
     kv_cache: KVQuantSpec = field(default_factory=KVQuantSpec)
     prune: PruneSpec = field(default_factory=PruneSpec)
     rotation: RotationSpec = field(default_factory=RotationSpec)
-    smoothing: SmoothSpec = field(default_factory=SmoothSpec)
     compensation: CompensationSpec = field(default_factory=CompensationSpec)
     nsamples: int = 128
     seqlen: int = 2048
     batch_size: int = 16
     max_layers: int = 0
-    channel_permutation: bool = True
     pairwise_fraction: float = 0.4
     pairwise_threshold: float = 0.0
     pairwise_layers: tuple[str, ...] = ()
@@ -378,7 +353,6 @@ class CompressionRecipe:
         self.kv_cache.validate()
         self.prune.validate()
         self.rotation.validate()
-        self.smoothing.validate()
         self.compensation.validate()
         if self.nsamples <= 0:
             raise ValueError("nsamples must be positive")
@@ -388,8 +362,6 @@ class CompressionRecipe:
             raise ValueError("batch_size must be positive")
         if self.max_layers < 0:
             raise ValueError("max_layers must be non-negative")
-        if self.channel_permutation and self.rotation.mode == "none":
-            raise ValueError("channel permutation requires Hadamard rotation")
         if not 0.0 <= self.pairwise_fraction <= 1.0:
             raise ValueError("pairwise_fraction must be in [0, 1]")
 
@@ -401,7 +373,6 @@ class CompressionRecipe:
             "kv_cache": self.kv_cache.to_dict(),
             "prune": self.prune.to_dict(),
             "rotation": self.rotation.to_dict(),
-            "smoothing": self.smoothing.to_dict(),
             "compensation": self.compensation.to_dict(),
             "calibration": {
                 "nsamples": self.nsamples,
@@ -409,7 +380,6 @@ class CompressionRecipe:
                 "batch_size": self.batch_size,
             },
             "max_layers": self.max_layers,
-            "channel_permutation": self.channel_permutation,
             "pairwise_fraction": self.pairwise_fraction,
         }
 
@@ -423,13 +393,11 @@ class CompressionRecipe:
             kv_cache=KVQuantSpec.from_dict(data["kv_cache"]),
             prune=PruneSpec.from_dict(data["prune"]),
             rotation=RotationSpec.from_dict(data["rotation"]),
-            smoothing=SmoothSpec.from_dict(data["smoothing"]),
             compensation=CompensationSpec.from_dict(data["compensation"]),
             nsamples=int(calib.get("nsamples", 128)),
             seqlen=int(calib.get("seqlen", 2048)),
             batch_size=int(calib.get("batch_size", 16)),
             max_layers=int(data.get("max_layers", 0)),
-            channel_permutation=bool(data.get("channel_permutation", True)),
             pairwise_fraction=float(data.get("pairwise_fraction", 0.4)),
             pairwise_layers=tuple(str(name) for name in data.get("pairwise_layers", ())),
         )
@@ -451,12 +419,10 @@ class CompressionRecipe:
         canonical = replace(
             self,
             rotation=RotationSpec(),
-            smoothing=SmoothSpec(),
             compensation=replace(
                 self.compensation,
                 alpha=0.5,
-                shift_scale=1.0,
-                damping=0.1,
+                damping=0.01,
             ),
             weight=replace(
                 self.weight,
@@ -479,7 +445,6 @@ class CompressionRecipe:
             seqlen=2048,
             batch_size=16,
             max_layers=0,
-            channel_permutation=True,
             pairwise_fraction=0.4,
             pairwise_threshold=0.0,
             pairwise_layers=(),
@@ -527,8 +492,6 @@ class CompressionRecipe:
             parts.append(f"k{self.kv_cache.granularity.tag()}")
         infix = "_".join(parts)
         tag = f"{prefix}__{infix}__{self.compensation.method}"
-        if self.channel_permutation:
-            tag += "__cp"
         if self.prune.structure in ("2:4", "4:8"):
             tag += f"__pw{self.pairwise_fraction:g}"
         if self._has_hidden_nondefault():
@@ -580,7 +543,6 @@ def fp16_recipe(
         kv_cache=replace(recipe.kv_cache, k_bits=16, v_bits=16),
         prune=replace(recipe.prune, sparsity=sparsity, structure=structure),
         compensation=replace(recipe.compensation, method="none"),
-        smoothing=SmoothSpec(alpha=None),
         pairwise_fraction=0.0,
         pairwise_layers=(),
     )
@@ -592,8 +554,15 @@ def dense_recipe(recipe: CompressionRecipe) -> CompressionRecipe:
 
 
 def sparse_recipe(recipe: CompressionRecipe) -> CompressionRecipe:
-    """Return the fp16 variant with the joint pruning mask."""
-    return fp16_recipe(recipe, recipe.prune.sparsity, recipe.prune.structure)
+    """Return the fp16 variant with the joint pruning mask.
+
+    The sparse baseline applies OBR pruning compensation only.  It must not
+    quantize weights/activations and must not run quantization compensation.
+    """
+    return replace(
+        fp16_recipe(recipe, recipe.prune.sparsity, recipe.prune.structure),
+        compensation=replace(recipe.compensation, method="obr"),
+    )
 
 
 def variant_recipes(

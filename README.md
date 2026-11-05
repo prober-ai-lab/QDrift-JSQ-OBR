@@ -29,7 +29,7 @@ Terminology:
 
 Default recipe follows OBR's setup: GPTQ, W4A4KV4, mid-tread, range-clip
 weights, per-channel weights and per-token activations/KV, WANDA, damping
-`0.1`, and `128×2048` calibration. Channel permutation is enabled by default.
+`0.01`, and `128×2048` calibration.
 For structured `2:4` / `4:8`, `--pairwise-fraction` controls the fraction of
 least-sensitive layers using hardware pair masks:
 `1.0` = all pairwise/sparse, `0.0` = all dense N:M.
@@ -37,7 +37,7 @@ least-sensitive layers using hardware pair masks:
 For a pure OBR accuracy run, use:
 
 ```bash
-scripts/compress.sh --structure 4:8 --pairwise-fraction 0.0 --no-channel-permutation
+scripts/compress.sh --structure 4:8 --pairwise-fraction 0.0
 ```
 
 ## Sparse structures
@@ -149,10 +149,10 @@ measures them with the graph-friendly runtime:
 ```bash
 CUDA_VISIBLE_DEVICES=2 python3 -m main benchmark \
   --model qwen2.5-0.5b \
-  --structure 2:4 --sparsity 0.5 --criterion qwanda --lambda 0.4 \
+  --structure 2:4 --sparsity 0.5 --criterion qwanda --lambda 0.7 \
   --w-bits 4 --w-gran channel \
   --a-bits 4 --kv-bits 4 \
-  --quant gptq --comp none --rotation none --no-channel-permutation \
+  --quant gptq --comp none --rotation none \
   --pairwise-fraction 1.0 \
   --tasks e2e --engine inference --batch-size 8 \
   --e2e-seqlen 1024 --e2e-decode-tokens 64 \
@@ -169,6 +169,6 @@ The inference engine consumes the four QDrift checkpoints and labels them
 checkpoints for the W4A4/joint-sparse-W4A4 path.  KV precision comes from the
 checkpoint recipe (`--kv-bits`); the inference engine falls back to
 KV16 if they differ.  The default
-`--e2e-regimes dense,quant,joint` keeps only the effective paths.  The engine
+`--e2e-regimes dense,sparse,quant,joint` evaluates every effective path, including the FP16 sparse baseline.  The engine
 requires `--rotation none`; rotated checkpoints use `--engine hf`.  Reference
 results: `results/inference/REPORT.md`.

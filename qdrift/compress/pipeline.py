@@ -35,10 +35,6 @@ from qdrift.compress.recipe import CompressionRecipe, variant_recipes
 from qdrift.data.dataloader import make_calibration_chunks
 from qdrift.data.tokenizer import load_tokenizer
 from qdrift.models.backbone import load_backbone, quantizable_linear_layers
-from qdrift.models.permutation import (
-    apply_channel_permutations,
-    build_channel_permutations,
-)
 from qdrift.models.rotation import (
     fuse_layer_norms,
     install_online_hadamards,
@@ -67,7 +63,6 @@ from qdrift.quant.gptq import gptq_quantize, rtn_quantize
 from qdrift.quant.pack import pack_codes
 from qdrift.quant.quantize import dequantize, fake_quantize, qrange
 from qdrift.quant.scale import compute_scale
-from qdrift.quant.smooth import channel_max, smooth_scale, smooth_weight
 
 __all__ = [
     "DevicePool",
@@ -79,12 +74,7 @@ __all__ = [
 ]
 
 
-def _hessian_from_inputs(
-    inputs: torch.Tensor,
-    inverse_smooth: torch.Tensor | None,
-) -> torch.Tensor:
-    if inverse_smooth is not None:
-        inputs = inputs * inverse_smooth.reshape(1, -1)
+def _hessian_from_inputs(inputs: torch.Tensor) -> torch.Tensor:
     hessian = inputs.t() @ inputs / max(inputs.shape[0], 1)
     return 0.5 * (hessian + hessian.t())
 
@@ -97,43 +87,38 @@ _HESSIAN_STREAM_ROWS = 8192
 def _hessians_streaming(
     fp_input: torch.Tensor,
     compressed_input: torch.Tensor | None,
-    inverse_smooth: torch.Tensor | None,
     damping: float,
-    shift_scale: float,
     device: str,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-    """Accumulate calibration Hessians without moving the full input to GPU."""
+    """Accumulate the mask/system Hessian and the asymmetric drift matrix."""
     total = int(fp_input.shape[0])
     width = int(fp_input.shape[-1])
-    hessian_fp = torch.zeros(width, width, device=device, dtype=torch.float32)
-    hessian_hat = (
-        torch.zeros_like(hessian_fp) if compressed_input is not None else None
-    )
-    cross = torch.zeros_like(hessian_fp) if compressed_input is not None else None
-    for start in range(0, total, _HESSIAN_STREAM_ROWS):
-        end = min(start + _HESSIAN_STREAM_ROWS, total)
-        zfp = fp_input[start:end].to(device=device, dtype=torch.float32)
-        if inverse_smooth is not None:
-            zfp = zfp * inverse_smooth.reshape(1, -1)
-        hessian_fp.add_(zfp.t() @ zfp)
-        if compressed_input is not None and hessian_hat is not None and cross is not None:
-            zhat = compressed_input[start:end].to(device=device, dtype=torch.float32)
-            if inverse_smooth is not None:
-                zhat = zhat * inverse_smooth.reshape(1, -1)
-            hessian_hat.add_(zhat.t() @ zhat)
-            cross.add_(zfp.t() @ zhat)
-            del zhat
-        del zfp
-    scale = max(total, 1)
-    hessian_fp.div_(scale)
-    if compressed_input is not None and hessian_hat is not None and cross is not None:
-        hessian_hat.div_(scale)
-        cross.div_(scale)
-        hessian_diff = shift_scale * (hessian_hat - cross)
-        hessian_system = (1.0 - shift_scale) * hessian_fp + shift_scale * hessian_hat
-    else:
+    if compressed_input is None:
+        hessian = torch.zeros(width, width, device=device, dtype=torch.float32)
+        for start in range(0, total, _HESSIAN_STREAM_ROWS):
+            end = min(start + _HESSIAN_STREAM_ROWS, total)
+            zfp = fp_input[start:end].to(device=device, dtype=torch.float32)
+            hessian.add_(zfp.t() @ zfp)
+            del zfp
+        hessian.div_(max(total, 1))
+        hessian_system = hessian
         hessian_diff = None
-        hessian_system = hessian_fp.clone()
+        mask_hessian = hessian
+    else:
+        hessian = torch.zeros(width, width, device=device, dtype=torch.float32)
+        hessian_diff = torch.zeros_like(hessian)
+        for start in range(0, total, _HESSIAN_STREAM_ROWS):
+            end = min(start + _HESSIAN_STREAM_ROWS, total)
+            zfp = fp_input[start:end].to(device=device, dtype=torch.float32)
+            zhat = compressed_input[start:end].to(device=device, dtype=torch.float32)
+            hessian.add_(zhat.t() @ zhat)
+            hessian_diff.add_((zhat - zfp).t() @ zhat)
+            del zfp, zhat
+        scale = max(total, 1)
+        hessian.div_(scale)
+        hessian_diff.div_(scale)
+        hessian_system = hessian
+        mask_hessian = hessian
     damp = damping * torch.diagonal(hessian_system).clamp_min(0).mean()
     hessian_system = hessian_system + damp * torch.eye(
         hessian_system.shape[0],
@@ -141,9 +126,7 @@ def _hessians_streaming(
         dtype=hessian_system.dtype,
     )
     hessian_system = 0.5 * (hessian_system + hessian_system.t())
-    mask_hessian = hessian_hat if compressed_input is not None else hessian_fp
     return mask_hessian, hessian_system, hessian_diff
-
 
 def _score(
     criterion: str,
@@ -179,44 +162,26 @@ def _pack_mask(mask: torch.Tensor) -> torch.Tensor:
     )
 
 
-def _smooth_for_layer(
-    weight: torch.Tensor,
-    fp_input: torch.Tensor | None,
-    alpha: float | None,
-) -> torch.Tensor | None:
-    if alpha is None or fp_input is None:
-        return None
-    return smooth_scale(
-        fp_input.abs().amax(dim=0),
-        channel_max(weight),
-        alpha,
-    )
-
-
 def _hessians(
     fp_input: torch.Tensor | None,
     compressed_input: torch.Tensor | None,
-    inverse_smooth: torch.Tensor | None,
     damping: float,
-    shift_scale: float,
 ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
     if fp_input is None:
         return None, None, None
-    hessian_fp = _hessian_from_inputs(fp_input, inverse_smooth)
     if compressed_input is not None:
-        hessian_hat = _hessian_from_inputs(compressed_input, inverse_smooth)
-        zfp = fp_input if inverse_smooth is None else fp_input * inverse_smooth
-        zhat = (
-            compressed_input
-            if inverse_smooth is None
-            else compressed_input * inverse_smooth
+        hessian_hat = _hessian_from_inputs(compressed_input)
+        hessian_diff = (
+            (compressed_input - fp_input).t() @ compressed_input
+            / max(fp_input.shape[0], 1)
         )
-        cross = zfp.t() @ zhat / max(zfp.shape[0], 1)
-        hessian_diff = shift_scale * (hessian_hat - cross)
-        hessian_system = (1.0 - shift_scale) * hessian_fp + shift_scale * hessian_hat
+        hessian_system = hessian_hat
+        mask_hessian = hessian_hat
     else:
+        hessian_fp = _hessian_from_inputs(fp_input)
         hessian_diff = None
         hessian_system = hessian_fp.clone()
+        mask_hessian = hessian_fp
     damp = damping * torch.diagonal(hessian_system).clamp_min(0).mean()
     hessian_system = hessian_system + damp * torch.eye(
         hessian_system.shape[0],
@@ -224,7 +189,6 @@ def _hessians(
         dtype=hessian_system.dtype,
     )
     hessian_system = 0.5 * (hessian_system + hessian_system.t())
-    mask_hessian = hessian_hat if compressed_input is not None else hessian_fp
     return mask_hessian, hessian_system, hessian_diff
 
 
@@ -260,7 +224,6 @@ def _quantize_layer(
     name: str | None,
     weight: torch.Tensor,
     weight_rot: torch.Tensor,
-    smooth: torch.Tensor | None,
     hessian_fp: torch.Tensor | None,
     hessian_system: torch.Tensor | None,
     hessian_raw: torch.Tensor | None,
@@ -377,6 +340,8 @@ def _quantize_layer(
             drift_weight=drift_weight,
         )
         retained = pruning_state.retained
+        # Joint/sparse-quantized checkpoints compensate the quantization error;
+        # the fp16 sparse baseline bypasses this function entirely.
         retained2 = compensate_quantization_error(
             weight_rot,
             pruning_state,
@@ -490,13 +455,9 @@ def _quantize_layer(
         raise ValueError(f"unknown weight method {recipe.weight.method}")
 
     new_weight = rotated
-    if smooth is not None:
-        new_weight = new_weight / smooth.reshape(1, -1)
 
     tensors["weight_mask"] = _pack_mask(mask)
     tensors["weight_shape"] = torch.tensor([rows, cols], dtype=torch.int32)
-    if smooth is not None:
-        tensors["weight_smooth_scale"] = smooth.to(torch.float16).cpu().contiguous()
     meta = {
         "shape": [rows, cols],
         "value_layout": value_layout,
@@ -509,7 +470,6 @@ def _quantize_layer(
         "scale_shape": stored_scale_shape,
         "code_encoding": code_encoding,
         "nnz": int(mask.sum().item()),
-        "smooth_alpha": recipe.smoothing.alpha,
         "structure": structure,
         "pairwise_ratio": pairwise_ratio,
     }
@@ -537,27 +497,12 @@ def _process_full_layer(
     local_weight = weight.detach().float().to(device)
     local_fp = None
     local_hat = None
-    if recipe.smoothing.alpha is not None and fp_input is not None:
-        activation_max = fp_input.abs().amax(dim=0).to(device)
-        smooth = smooth_scale(
-            activation_max,
-            channel_max(local_weight),
-            recipe.smoothing.alpha,
-        )
-    else:
-        smooth = None
-    inverse_smooth = smooth.reciprocal() if smooth is not None else None
-    weight_smoothed = (
-        smooth_weight(local_weight, smooth) if smooth is not None else local_weight
-    )
     if need_hessian:
         if fp_input is not None and fp_input.numel() > _STREAM_HESSIAN_ELEMENTS:
             hessian_fp, hessian_system, hessian_diff = _hessians_streaming(
                 fp_input,
                 compressed_input,
-                inverse_smooth,
                 recipe.compensation.damping,
-                recipe.compensation.shift_scale,
                 device,
             )
             hessian_raw = hessian_system
@@ -575,9 +520,7 @@ def _process_full_layer(
             hessian_fp, hessian_system, hessian_diff = _hessians(
                 local_fp,
                 local_hat,
-                inverse_smooth,
                 recipe.compensation.damping,
-                recipe.compensation.shift_scale,
             )
             hessian_raw = hessian_system
     else:
@@ -587,14 +530,13 @@ def _process_full_layer(
         qparams,
         name,
         local_weight,
-        weight_smoothed,
-        smooth,
+        local_weight,
         hessian_fp,
         hessian_system,
         hessian_raw,
         hessian_diff,
     )
-    del local_weight, local_fp, local_hat, weight_smoothed
+    del local_weight, local_fp, local_hat
     torch.cuda.empty_cache()
     return result
 
@@ -604,7 +546,6 @@ def _process_row_slice(
     qparams: tuple[int, int, float],
     name: str | None,
     weight_rows: torch.Tensor,
-    smooth: torch.Tensor | None,
     hessian_fp: torch.Tensor | None,
     hessian_system: torch.Tensor | None,
     hessian_raw: torch.Tensor | None,
@@ -614,24 +555,17 @@ def _process_row_slice(
 ) -> LayerResult:
     torch.cuda.set_device(device)
     local_weight = weight_rows.detach().float().to(device)
-    local_smooth = smooth.to(device) if smooth is not None else None
     local_fp = hessian_fp.to(device) if hessian_fp is not None else None
     local_system = hessian_system.to(device) if hessian_system is not None else None
     local_raw = hessian_raw.to(device) if hessian_raw is not None else None
     local_diff = hessian_diff.to(device) if hessian_diff is not None else None
     local_drift = drift_weight.to(device) if drift_weight is not None else None
-    weight_smoothed = (
-        smooth_weight(local_weight, local_smooth)
-        if local_smooth is not None
-        else local_weight
-    )
     result = _quantize_layer(
         recipe,
         qparams,
         name,
         local_weight,
-        weight_smoothed,
-        local_smooth,
+        local_weight,
         local_fp,
         local_system,
         local_raw,
@@ -640,13 +574,11 @@ def _process_row_slice(
     )
     del (
         local_weight,
-        local_smooth,
         local_fp,
         local_system,
         local_raw,
         local_diff,
         local_drift,
-        weight_smoothed,
     )
     torch.cuda.empty_cache()
     return result
@@ -773,7 +705,6 @@ def compress(
         device=main_device,
     )
     tokenizer = load_tokenizer(recipe.model, manifest_path)
-    permutations = None
     if recipe.rotation.mode != "none":
         fuse_layer_norms(model)
         torch.manual_seed(recipe.rotation.seed)
@@ -785,15 +716,8 @@ def compress(
             main_device,
             recipe.rotation.seed,
         )
-    if recipe.channel_permutation:
-        permutations = build_channel_permutations(model)
-        apply_channel_permutations(model, permutations)
     if recipe.rotation.mode != "none":
-        install_online_hadamards(
-            model,
-            permutations.o if permutations is not None else None,
-            permutations.down if permutations is not None else None,
-        )
+        install_online_hadamards(model)
     layers = quantizable_linear_layers(model)
     if recipe.max_layers > 0:
         selected = list(layers)[: recipe.max_layers]
@@ -815,7 +739,6 @@ def compress(
         recipe.prune.criterion in ("wanda", "qwanda")
         or recipe.compensation.method != "none"
         or recipe.weight.method == "gptq"
-        or recipe.smoothing.alpha is not None
         or needs_pairwise_selection
     )
     fp_inputs: dict[str, torch.Tensor] = {}
@@ -903,7 +826,91 @@ def compress(
 
         results: list[LayerResult] = []
         names = list(group.names)
-        if pool.size > 1 and len(names) > 1:
+        if (
+            pool.size > 1
+            and len(names) > 1
+            and recipe.weight.granularity.kind != "tensor"
+        ):
+            if need_hessian:
+                hessian_fp, hessian_system, hessian_diff = _hessians_streaming(
+                    fp_input,
+                    compressed_input,
+                    recipe.compensation.damping,
+                    main_device,
+                )
+                hessian_raw = hessian_system
+            else:
+                hessian_fp = hessian_system = hessian_raw = hessian_diff = None
+            task_specs: list[tuple[str, int, int]] = []
+            tasks = []
+            for name in names:
+                weight = layers[name].weight.data.detach().float().to(main_device)
+                local_drift = (
+                    drift_weight(weight, hessian_diff)
+                    if hessian_diff is not None
+                    else None
+                )
+                rows = int(weight.shape[0])
+                for split_index in range(pool.size):
+                    start_row = rows * split_index // pool.size
+                    end_row = rows * (split_index + 1) // pool.size
+                    if start_row >= end_row:
+                        continue
+                    task_specs.append((name, start_row, end_row))
+                    tasks.append(
+                        lambda dev, name=name, weight=weight, local_drift=local_drift, start_row=start_row, end_row=end_row: (
+                            _process_row_slice(
+                                recipe,
+                                qparams,
+                                name,
+                                weight[start_row:end_row],
+                                hessian_fp,
+                                hessian_system,
+                                hessian_raw,
+                                hessian_diff,
+                                local_drift[start_row:end_row]
+                                if local_drift is not None
+                                else None,
+                                dev,
+                            )
+                        )
+                    )
+            slice_results = pool.run(tasks)
+            for name in names:
+                name_slices = [
+                    slice_results[index]
+                    for index, spec in enumerate(task_specs)
+                    if spec[0] == name
+                ]
+                result = _merge_slices(name_slices)
+                layers[name].weight.data = result.new_weight.to(
+                    device=main_device,
+                    dtype=layers[name].weight.dtype,
+                )
+                tensors.update(
+                    {f"{name}.{key}": value for key, value in result.tensors.items()}
+                )
+                layer_meta[name] = result.meta
+                if mask_dir is not None:
+                    _write_layer_mask(
+                        mask_dir,
+                        name,
+                        result.tensors["weight_mask"],
+                        result.meta.get("structure"),
+                    )
+                value_layout = result.value_layout
+                scale_layout = result.scale_layout
+                code_encoding = result.code_encoding
+                index += 1
+                print(
+                    f"[{index}/{total}] {name} "
+                    f"nnz={result.meta['nnz']} "
+                    f"structure={result.meta.get('structure', recipe.prune.structure)} "
+                    f"pairwise_ratio={result.meta.get('pairwise_ratio')} "
+                    f"elapsed={time.time() - start:.1f}s",
+                    flush=True,
+                )
+        elif pool.size > 1 and len(names) > 1:
             tasks = []
             for name in names:
                 layer_weight = layers[name].weight.data
@@ -957,49 +964,39 @@ def compress(
         ):
             name = names[0]
             weight = layers[name].weight.data.detach().float().to(main_device)
-            smooth = _smooth_for_layer(
-                weight,
-                fp_input,
-                recipe.smoothing.alpha,
-            )
-            inverse_smooth = smooth.reciprocal() if smooth is not None else None
             if need_hessian:
-                hessian_fp, hessian_system, hessian_diff = _hessians(
+                hessian_fp, hessian_system, hessian_diff = _hessians_streaming(
                     fp_input,
                     compressed_input,
-                    inverse_smooth,
                     recipe.compensation.damping,
-                    recipe.compensation.shift_scale,
+                    main_device,
                 )
                 hessian_raw = hessian_system
             else:
                 hessian_fp = hessian_system = hessian_raw = hessian_diff = None
-            smoothed = smooth_weight(weight, smooth) if smooth is not None else weight
             local_drift_weight = (
-                drift_weight(smoothed, hessian_diff)
+                drift_weight(weight, hessian_diff)
                 if hessian_diff is not None
                 else None
             )
-            del smoothed
             rows = weight.shape[0]
             splits = [
                 (rows * index // pool.size, rows * (index + 1) // pool.size)
                 for index in range(pool.size)
             ]
             tasks = [
-                lambda dev, start_row=start, end_row=end, weight=weight, smooth=smooth, hessian_fp=hessian_fp, hessian_system=hessian_system, hessian_raw=hessian_raw, hessian_diff=hessian_diff, drift_weight=local_drift_weight: (
+                lambda dev, start_row=start, end_row=end, weight=weight, hessian_fp=hessian_fp, hessian_system=hessian_system, hessian_raw=hessian_raw, hessian_diff=hessian_diff, local_drift=local_drift_weight: (
                     _process_row_slice(
                         recipe,
                         qparams,
                         name,
                         weight[start_row:end_row],
-                        smooth,
                         hessian_fp,
                         hessian_system,
                         hessian_raw,
                         hessian_diff,
-                        drift_weight[start_row:end_row]
-                        if drift_weight is not None
+                        local_drift[start_row:end_row]
+                        if local_drift is not None
                         else None,
                         dev,
                     )
@@ -1030,7 +1027,6 @@ def compress(
             )
             del (
                 weight,
-                smooth,
                 hessian_fp,
                 hessian_system,
                 hessian_raw,
@@ -1082,8 +1078,6 @@ def compress(
     save_file(tensors, str(tensor_path))
 
     config = recipe.base_config()
-    if permutations is not None:
-        config["permutation"] = permutations.to_dict()
     config["layout"] = {
         "pack_axis": "in_features",
         "bit_order": "lsb_first",
@@ -1270,78 +1264,116 @@ def write_fp16_baseline(
         raise ValueError("sparse baseline requires joint_checkpoint or mask_dir")
 
     model = load_backbone(recipe.model, manifest_path, device=device)
-    permutations = None
     if recipe.rotation.mode != "none":
         fuse_layer_norms(model)
         torch.manual_seed(recipe.rotation.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(recipe.rotation.seed)
         rotate_model(model, recipe.rotation.mode, device, recipe.rotation.seed)
-    if recipe.channel_permutation:
-        permutations = build_channel_permutations(model)
-        apply_channel_permutations(model, permutations)
     if recipe.rotation.mode != "none":
-        install_online_hadamards(
+        install_online_hadamards(model)
+
+    modules = dict(model.named_modules())
+    layer_names = _layer_names(model, recipe.max_layers)
+    group_layers = {name: modules[name] for name in layer_names}
+    groups = layer_groups(model, group_layers)
+    calibration_inputs: dict[str, torch.Tensor] | None = None
+    if use_joint_mask:
+        tokenizer = load_tokenizer(recipe.model, manifest_path)
+        chunks = make_calibration_chunks(
+            tokenizer,
+            nsamples=recipe.nsamples,
+            seqlen=recipe.seqlen,
+            seed=recipe.rotation.seed,
+        )
+        capture_names = sorted({group.capture for group in groups})
+        calibration_inputs = capture_inputs(
             model,
-            permutations.o if permutations is not None else None,
-            permutations.down if permutations is not None else None,
+            capture_names,
+            chunks,
+            device,
         )
 
     tensors: dict[str, torch.Tensor] = {}
     layers: dict[str, dict[str, object]] = {}
-    modules = dict(model.named_modules())
-    for name in _layer_names(model, recipe.max_layers):
-        layer = modules[name]
-        rows = int(layer.weight.shape[0])
-        cols = int(layer.weight.shape[1])
-        weight = layer.weight.data.detach().float().to(device)
-        layer_structure = (
-            str(joint_layers.get(name, {}).get("structure", recipe.prune.structure))
-            if use_joint_mask
-            else "none"
-        )
-        if use_joint_mask:
-            if mask_dir is not None:
-                packed = _wait_for_mask(mask_dir, name).to(device=device)
-                structure_path = Path(mask_dir) / f"{name}.structure"
-                if structure_path.exists():
-                    layer_structure = structure_path.read_text(encoding="utf-8").strip()
+    # Compute the Hessian one input-sharing group at a time.  Keeping every
+    # group Hessian resident is O(num_layers * hidden^2) and OOMs on 7B models.
+    for group in groups:
+        hessian = None
+        if calibration_inputs is not None:
+            _, hessian, _ = _hessians_streaming(
+                calibration_inputs[group.capture],
+                None,
+                recipe.compensation.damping,
+                device,
+            )
+        for name in group.names:
+            layer = modules[name]
+            rows = int(layer.weight.shape[0])
+            cols = int(layer.weight.shape[1])
+            weight = layer.weight.data.detach().float().to(device)
+            layer_structure = (
+                str(joint_layers.get(name, {}).get("structure", recipe.prune.structure))
+                if use_joint_mask
+                else "none"
+            )
+            if use_joint_mask:
+                if mask_dir is not None:
+                    packed = _wait_for_mask(mask_dir, name).to(device=device)
+                    structure_path = Path(mask_dir) / f"{name}.structure"
+                    if structure_path.exists():
+                        layer_structure = structure_path.read_text(
+                            encoding="utf-8"
+                        ).strip()
+                else:
+                    packed = joint_tensors[f"{name}.weight_mask"].to(device=device)
+                mask = _unpack_mask(packed, cols)
             else:
-                packed = joint_tensors[f"{name}.weight_mask"].to(device=device)
-            mask = _unpack_mask(packed, cols)
-        else:
-            mask = torch.ones(rows, cols, device=device, dtype=torch.bool)
-        kept = int(mask[0].sum())
-        keep = torch.argsort(
-            (~mask).to(torch.int8),
-            dim=1,
-            stable=True,
-        )[:, :kept]
-        retained = weight.gather(1, keep).to(torch.float16).cpu().contiguous()
-        tensors[f"{name}.weight_kept_fp16"] = retained
-        tensors[f"{name}.weight_kept_shape"] = torch.tensor(
-            [rows, kept],
-            dtype=torch.int32,
-        )
-        tensors[f"{name}.weight_mask"] = _pack_mask(mask)
-        tensors[f"{name}.weight_shape"] = torch.tensor(
-            [rows, cols],
-            dtype=torch.int32,
-        )
-        layers[name] = {
-            "shape": [rows, cols],
-            "value_layout": "fp16_compacted",
-            "scale_layout": "none",
-            "kept_shape": [rows, kept],
-            "bits": 16,
-            "nnz": int(mask.sum().item()),
-            "smooth_alpha": None,
-            "structure": layer_structure,
-        }
+                mask = torch.ones(rows, cols, device=device, dtype=torch.bool)
+            kept = int(mask[0].sum())
+            keep = torch.argsort(
+                (~mask).to(torch.int8),
+                dim=1,
+                stable=True,
+            )[:, :kept]
+            # The sparse baseline only performs OBR pruning compensation.  It
+            # never quantizes and never runs quantization compensation.
+            if hessian is not None and recipe.compensation.method != "none":
+                state = compensate_pruning_error(
+                    weight,
+                    hessian,
+                    hessian,
+                    None,
+                    mask,
+                    alpha=recipe.compensation.alpha,
+                )
+                retained_values = state.retained
+            else:
+                retained_values = weight.gather(1, keep)
+            retained = retained_values.to(torch.float16).cpu().contiguous()
+            tensors[f"{name}.weight_kept_fp16"] = retained
+            tensors[f"{name}.weight_kept_shape"] = torch.tensor(
+                [rows, kept],
+                dtype=torch.int32,
+            )
+            tensors[f"{name}.weight_mask"] = _pack_mask(mask)
+            tensors[f"{name}.weight_shape"] = torch.tensor(
+                [rows, cols],
+                dtype=torch.int32,
+            )
+            layers[name] = {
+                "shape": [rows, cols],
+                "value_layout": "fp16_compacted",
+                "scale_layout": "none",
+                "kept_shape": [rows, kept],
+                "bits": 16,
+                "nnz": int(mask.sum().item()),
+                "structure": layer_structure,
+            }
+        del hessian
+        torch.cuda.empty_cache()
 
     config = recipe.base_config()
-    if permutations is not None:
-        config["permutation"] = permutations.to_dict()
     config["layout"] = {
         "value_layout": "fp16_compacted",
         "scale_layout": "none",

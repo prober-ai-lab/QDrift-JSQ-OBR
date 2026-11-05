@@ -571,7 +571,7 @@ def run_benchmark(recipe: CompressionRecipe, args: Any) -> int:
                     kv_bits=None,
                     regimes=tuple(
                         item.strip()
-                        for item in getattr(args, "e2e_regimes", "dense,quant,joint").split(",")
+                        for item in getattr(args, "e2e_regimes", "dense,sparse,quant,joint").split(",")
                         if item.strip() and item.strip() in efficiency_regimes
                     ),
                     allow_sparse=allow_sparse,

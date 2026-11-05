@@ -249,6 +249,20 @@ class SequentialCalibration:
             self._advance()
         if target < self.index:
             raise ValueError(f"capture point {capture!r} is behind the cursor")
+        layer = self.blocks[self.index]
+        # q/k/v share the post-input-norm tensor.  Capture it directly when the
+        # block exposes input_layernorm, avoiding one full layer forward.
+        if capture.endswith(".self_attn.q_proj"):
+            norm = getattr(layer, "input_layernorm", None)
+            if norm is not None:
+                values = [
+                    norm(hidden)
+                    .detach()
+                    .reshape(-1, hidden.shape[-1])
+                    .to(device="cpu", dtype=torch.float32)
+                    for hidden in self.hidden
+                ]
+                return torch.cat(values, dim=0) if values else torch.empty(0)
         module = self.modules[capture]
         values: list[torch.Tensor] = []
 
@@ -260,7 +274,6 @@ class SequentialCalibration:
 
         handle = module.register_forward_pre_hook(hook)
         try:
-            layer = self.blocks[self.index]
             for hidden, kwargs in zip(self.hidden, self.kwargs, strict=True):
                 layer(hidden, **kwargs)
         finally:

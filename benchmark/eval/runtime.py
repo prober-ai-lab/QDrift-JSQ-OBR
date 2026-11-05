@@ -31,10 +31,6 @@ from benchmark.kernels.lib.registry import select_kernel
 from qdrift.compress.recipe import CompressionRecipe
 from qdrift.data.tokenizer import load_tokenizer
 from qdrift.models.backbone import load_backbone
-from qdrift.models.permutation import (
-    ChannelPermutations,
-    apply_channel_permutations,
-)
 from qdrift.models.rotation import (
     fuse_layer_norms,
     install_online_hadamards,
@@ -469,7 +465,6 @@ class CompressedLinear(torch.nn.Module):
         case: LayerCase,
         regime: str,
         recipe: CompressionRecipe,
-        smooth: torch.Tensor | None = None,
     ) -> None:
         super().__init__()
         self.in_features = int(original.in_features)
@@ -477,7 +472,6 @@ class CompressedLinear(torch.nn.Module):
         self.case = case
         self.regime = regime
         self.recipe = recipe
-        self.smooth = smooth
         self.bias = (
             original.bias.detach().to(dtype=torch.float16)
             if original.bias is not None
@@ -489,11 +483,7 @@ class CompressedLinear(torch.nn.Module):
         flat = x.reshape(-1, self.in_features)
         if flat.dtype != torch.float16:
             flat = flat.to(torch.float16)
-        if self.smooth is not None:
-            flat = flat / self.smooth.to(device=flat.device, dtype=flat.dtype).reshape(
-                1, -1
-            )
-        if self.case.semi_weight is not None and self.smooth is None:
+        if self.case.semi_weight is not None:
             bias = (
                 self.bias.to(device=flat.device, dtype=flat.dtype)
                 if self.bias is not None
@@ -554,17 +544,12 @@ def load_runtime_model(
         dtype=dtype,
     )
     tokenizer = load_tokenizer(recipe.model, manifest_path)
-    permutations = None
     if recipe.rotation.mode != "none":
         fuse_layer_norms(model)
         torch.manual_seed(recipe.rotation.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(recipe.rotation.seed)
         rotate_model(model, recipe.rotation.mode, device, recipe.rotation.seed)
-    if config.get("permutation"):
-        permutations = ChannelPermutations.from_dict(config["permutation"])
-        apply_channel_permutations(model, permutations)
-
     if compile_model:
         from torch import _dynamo as torch_dynamo
 
@@ -575,10 +560,7 @@ def load_runtime_model(
     for name in config["layers"]:
         original = modules[name]
         case = make_regime_case(config, tensors, name, regime, device, allow_sparse)
-        smooth = tensors.get(f"{name}.weight_smooth_scale")
-        if smooth is not None:
-            smooth = smooth.to(device=device, dtype=torch.float16)
-        replacement = CompressedLinear(original, case, regime, recipe, smooth)
+        replacement = CompressedLinear(original, case, regime, recipe)
         if compile_model:
             replacement = torch.compile(replacement, mode="max-autotune")
         parent_name, child_name = name.rsplit(".", 1)
@@ -588,11 +570,7 @@ def load_runtime_model(
 
     del modules
     if recipe.rotation.mode != "none":
-        install_online_hadamards(
-            model,
-            permutations.o if permutations is not None else None,
-            permutations.down if permutations is not None else None,
-        )
+        install_online_hadamards(model)
     model.config.use_cache = True
     model.eval()
     return model, tokenizer, recipe

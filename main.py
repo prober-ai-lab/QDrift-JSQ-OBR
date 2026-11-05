@@ -17,7 +17,6 @@ from qdrift.compress.recipe import (
     KVQuantSpec,
     PruneSpec,
     RotationSpec,
-    SmoothSpec,
     WeightQuantSpec,
 )
 
@@ -55,7 +54,7 @@ def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sparsity", type=_sparsity, default=0.5)
     parser.add_argument("--structure", choices=("unstructured", "2:4", "4:8"), default="4:8")
     parser.add_argument("--criterion", choices=("wanda", "qwanda", "magnitude", "random"), default="wanda")
-    parser.add_argument("--lambda", dest="lam", type=float, default=0.4)
+    parser.add_argument("--lambda", dest="lam", type=float, default=0.7)
     parser.add_argument("--w-gran", choices=("tensor", "channel", "group"), default="channel")
     parser.add_argument("--w-group-size", "--group-size", dest="w_group_size", type=int, default=128)
     parser.add_argument("--a-gran", choices=("tensor", "token", "group"), default="token")
@@ -68,9 +67,8 @@ def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--nsamples", type=int, default=128)
     parser.add_argument("--seqlen", type=int, default=2048)
     parser.add_argument("--batch-size", type=int, default=16, help="batch size for calibration, PPL, zero-shot, and e2e")
-    parser.add_argument("--damping", type=float, default=0.1)
+    parser.add_argument("--damping", type=float, default=0.01)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--channel-permutation", action=argparse.BooleanOptionalAction, default=True, help="absorb a global hidden permutation and gather o/down inputs online")
     parser.add_argument("--pairwise-fraction", type=_fraction, default=0.4, help="fraction of least sensitive layers using pairwise masks; 1.0=all pair, 0.0=all dense")
     # fmt: on
 
@@ -103,7 +101,7 @@ def _add_benchmark_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--e2e-iters", type=int, default=5)
     parser.add_argument("--compile", action="store_true", help="compile compressed Linear modules with torch.compile")
     parser.add_argument("--engine", choices=("hf", "inference"), default="hf", help="e2e backend: hf (default) or the graph-friendly checkpoint runtime")
-    parser.add_argument("--e2e-regimes", default="dense,quant,joint", help="comma-separated checkpoint regimes for the inference engine")
+    parser.add_argument("--e2e-regimes", default="dense,sparse,quant,joint", help="comma-separated checkpoint regimes for the inference engine")
     parser.add_argument("--no-sparse-accel", action="store_true", help="force dense/int fallback instead of sparse Tensor Core acceleration")
     parser.add_argument("--e2e-cuda-graph", action=argparse.BooleanOptionalAction, default=True)
     # fmt: on
@@ -141,12 +139,10 @@ def _build_recipe(args: argparse.Namespace) -> CompressionRecipe:
             lam=args.lam,
         ),
         rotation=RotationSpec(mode=args.rotation, seed=args.seed),
-        smoothing=SmoothSpec(alpha=None),
         compensation=CompensationSpec(method=args.comp, damping=args.damping),
         nsamples=args.nsamples,
         seqlen=args.seqlen,
         batch_size=args.batch_size,
-        channel_permutation=args.channel_permutation,
         pairwise_fraction=args.pairwise_fraction,
     )
 
