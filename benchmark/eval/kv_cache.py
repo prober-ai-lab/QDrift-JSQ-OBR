@@ -37,7 +37,13 @@ def _quantize_last_dim(
     else:
         limit = max(abs(qmin), abs(qmax))
         scale = amax / limit
-        codes = torch.round(x / scale).clamp(qmin, qmax)
+        if offset:
+            # Mid-rise reconstructs (c + 0.5) * s: sign-magnitude floor,
+            # matching qdrift.quant.quantize.quantize.
+            level = torch.floor(x.abs() / scale)
+            codes = torch.where(x < 0, -level - 1, level).clamp(qmin, qmax)
+        else:
+            codes = torch.round(x / scale).clamp(qmin, qmax)
     return codes.to(torch.int8), scale.to(torch.float16), offset
 
 

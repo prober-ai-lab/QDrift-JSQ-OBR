@@ -64,7 +64,18 @@ def _quantize_codes(
         qmin, qmax, offset = qrange(bits, grid)
         limit = _qmax(qmin, qmax)
         scales = amax / limit
-        codes = torch.round(view / scales.unsqueeze(2)).clamp(qmin, qmax)
+        if grid == "midrise":
+            # Mid-rise levels (c + 0.5) * s are stored as the odd integers
+            # 2c + 1 with step s / 2, so the INT8 GEMM is exact and an
+            # explicit zero (pruned weight) stays representable.
+            # Sign-magnitude floor, matching qdrift.quant.quantize.quantize.
+            level = torch.floor(view.abs() / scales.unsqueeze(2))
+            codes = torch.where(view < 0, -level - 1, level).clamp(qmin, qmax)
+            codes = 2 * codes + 1
+            scales = scales / 2
+            offset = 0.0
+        else:
+            codes = torch.round(view / scales.unsqueeze(2)).clamp(qmin, qmax)
     codes = codes.reshape(rows, -1).to(torch.int8)[:, :cols]
     return codes, scales, group_size, offset
 
@@ -328,6 +339,40 @@ def _sparse_components(
     return None, None, components, offsets
 
 
+def _exact_codes(
+    weight: torch.Tensor,
+    code_grid: str,
+    scales: torch.Tensor,
+    group_size: int,
+    scale_granularity: str,
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    """Return INT8 codes that reproduce a dequantized checkpoint exactly.
+
+    Mid-tread levels c * s keep code c and step s.  Mid-rise levels
+    (c + 0.5) * s become the odd code 2c + 1 with step s / 2, so the GEMM
+    needs no offset correction and masked weights stay exactly zero.
+    """
+    rows, cols = weight.shape
+    step = scales.float()
+    if step.shape[1] == 1:
+        if scale_granularity == "tensor":
+            step = step[0:1, 0:1].expand(rows, 1)
+        group = cols
+    else:
+        group = int(group_size)
+        if step.shape[1] * group < cols:
+            raise ValueError("checkpoint scale groups do not cover the weight")
+    if code_grid == "midrise":
+        step = step / 2
+    expanded = step.repeat_interleave(group, dim=1)[:, :cols]
+    codes = torch.round(weight / expanded)
+    if float((codes * expanded - weight).abs().max()) > 1e-3 * float(
+        weight.abs().max().clamp_min(1e-12)
+    ):
+        raise ValueError("checkpoint weight is not on its quantization grid")
+    return codes.to(torch.int8), step.contiguous(), group
+
+
 def build_int8_weight(
     code_bits: int,
     code_grid: str,
@@ -353,15 +398,28 @@ def build_int8_weight(
         scale_granularity,
         mask,
     )
-    if code_bits == 1:
-        compute_grid = "midrise"
-    out_group = min(cols, group_size)
-    codes, out_scales, actual_group, offset = _quantize_codes(
-        weight,
-        code_bits,
-        compute_grid,
-        out_group,
-    )
+    if 1 < code_bits <= 7 and scales.shape[1] != cols:
+        # Reuse the checkpoint step exactly instead of requantizing: a fresh
+        # amax-based requantization moves every weight off its trained level
+        # (and onto a different grid for mid-rise checkpoints).
+        codes, out_scales, actual_group = _exact_codes(
+            weight,
+            code_grid,
+            scales,
+            group_size,
+            scale_granularity,
+        )
+        offset = 0.0
+    else:
+        if code_bits == 1:
+            compute_grid = "midrise"
+        out_group = min(cols, group_size)
+        codes, out_scales, actual_group, offset = _quantize_codes(
+            weight,
+            code_bits,
+            compute_grid,
+            out_group,
+        )
     if sparse:
         if mask is None:
             raise ValueError("sparse INT8 weight requires a mask")

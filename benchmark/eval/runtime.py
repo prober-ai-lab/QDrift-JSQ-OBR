@@ -390,6 +390,11 @@ def make_regime_case(
             in ("2:4", "4:8", "2:4_pairwise", "4:8_pairwise")
         )
         and granularity.kind in ("tensor", "channel")
+        # The QuaRot kernels take signed INT4 codes and quantize activations
+        # on the mid-tread grid internally; mid-rise stays on the exact INT8
+        # path, whose odd codes 2c + 1 do not fit in INT4.
+        and recipe.weight.grid == "midtread"
+        and recipe.activation.grid == "midtread"
     ):
         if sparse_pairwise:
             if mask_bool is None:

@@ -23,6 +23,7 @@ def _quant_kernel(
     qmin,
     qmax,
     BITS: tl.constexpr,
+    MIDRISE: tl.constexpr,
     BLOCK: tl.constexpr,
 ) -> None:
     row = tl.program_id(0)
@@ -46,7 +47,11 @@ def _quant_kernel(
     else:
         limit = tl.maximum(tl.abs(qmin), tl.abs(qmax)).to(tl.float32)
         scale = amax / limit
-    tl.store(scale_ptr + row * tl.num_programs(1) + group, scale)
+    if MIDRISE:
+        # Stored step is s / 2; codes are the odd integers 2c + 1.
+        tl.store(scale_ptr + row * tl.num_programs(1) + group, scale * 0.5)
+    else:
+        tl.store(scale_ptr + row * tl.num_programs(1) + group, scale)
     for base in range(start, end, BLOCK):
         index = base + offs
         mask = index < end
@@ -57,6 +62,12 @@ def _quant_kernel(
         ).to(tl.float32)
         if BITS == 1:
             code = tl.where(value > 0, 1.0, tl.where(value < 0, -1.0, 0.0))
+        elif MIDRISE:
+            # Sign-magnitude floor, matching qdrift.quant.quantize.quantize.
+            level = tl.floor(tl.abs(value) / scale)
+            code = tl.where(value < 0, -level - 1.0, level)
+            code = tl.maximum(tl.minimum(code, qmax), qmin)
+            code = 2.0 * code + 1.0
         else:
             code = tl.floor(value / scale + 0.5)
             code = tl.maximum(tl.minimum(code, qmax), qmin)
@@ -87,8 +98,9 @@ def quantize_activations_triton(
     if bits == 1:
         qmin, qmax, offset = -1, 1, 0.0
     elif grid == "midrise":
+        # The kernel emits odd codes 2c + 1 with step s / 2, so no offset.
         half = 2 ** (bits - 1)
-        qmin, qmax, offset = -half, half - 1, 0.5
+        qmin, qmax, offset = -half, half - 1, 0.0
     else:
         qmin, qmax, offset = -(2 ** (bits - 1)), 2 ** (bits - 1) - 1, 0.0
     codes = torch.empty((rows, cols), device=x.device, dtype=torch.int8)
@@ -105,6 +117,7 @@ def quantize_activations_triton(
         qmin,
         qmax,
         BITS=bits,
+        MIDRISE=bits > 1 and grid == "midrise",
         BLOCK=block,
         num_warps=4,
     )
