@@ -66,14 +66,17 @@ pip install -r requirements.txt
 scripts/compress.sh
 
 # Unified benchmark: four-regime accuracy + prefill/decode efficiency.
-scripts/bench.sh --tasks all
+scripts/benchmark.sh --tasks all
+
+# Headline QDrift recipe (llama2-7b, W2A16 mid-rise): compress + PPL.
+scripts/reproduce.sh
 
 # Hardware-sparse joint checkpoint only (CUTLASS INT4 sparse).
 scripts/compress.sh --structure 2:4 --pairwise-fraction 1.0 --w-gran channel \
   --w-bits 4 --a-bits 4 --kv-bits 4 --single
 ```
 
-`scripts/compress.sh` and `scripts/bench.sh` are thin wrappers around
+`scripts/compress.sh` and `scripts/benchmark.sh` are thin wrappers around
 `python -m main`; all recipe defaults and argument construction live in
 `main.py`.  Pass `--model llama2-7b` or set `PYTHON=/path/to/python` when needed.
 

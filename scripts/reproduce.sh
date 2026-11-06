@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 QDrift Authors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Compress and evaluate the headline QDrift recipe: llama2-7b, 50%
+# unstructured sparsity, W2A16 group-128 weights on the mid-rise grid,
+# Q-WANDA (lambda 0.7), RTN and drift compensation.
+#
+# Extra recipe flags are passed to both steps, e.g. --model llama2-13b.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+RECIPE=(
+  --model llama2-7b
+  --sparsity 0.5 --structure unstructured --pairwise-fraction 0
+  --criterion qwanda --lambda 0.7
+  --w-bits 2 --w-gran group --w-group-size 128 --grid midrise
+  --a-bits 16 --kv-bits 16
+  --quant rtn --range clip --comp drift --damping 0.01
+  --rotation hadamard
+  --nsamples 32 --seqlen 1024 --batch-size 8
+  "$@"
+)
+
+scripts/compress.sh "${RECIPE[@]}"
+scripts/benchmark.sh "${RECIPE[@]}" --tasks ppl
