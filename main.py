@@ -59,7 +59,9 @@ def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--w-group-size", "--group-size", dest="w_group_size", type=int, default=128)
     parser.add_argument("--a-gran", choices=("tensor", "token", "group"), default="token")
     parser.add_argument("--kv-gran", choices=("tensor", "token", "group"), default="token")
-    parser.add_argument("--grid", choices=("midrise", "midtread"), default="midtread")
+    parser.add_argument("--grid", choices=("midrise", "midtread"), default="midtread", help="grid for weights, and for activations/KV unless --a-grid/--kv-grid is given")
+    parser.add_argument("--a-grid", choices=("midrise", "midtread"), default=None, help="activation grid (default: --grid)")
+    parser.add_argument("--kv-grid", choices=("midrise", "midtread"), default=None, help="KV-cache grid (default: --grid)")
     parser.add_argument("--range", choices=("full", "clip"), default="clip")
     parser.add_argument("--quant", choices=("rtn", "gptq"), default="gptq")
     parser.add_argument("--comp", choices=("none", "obr", "drift"), default="obr")
@@ -121,14 +123,14 @@ def _build_recipe(args: argparse.Namespace) -> CompressionRecipe:
         activation=ActivationQuantSpec(
             bits=args.a_bits,
             granularity=_granularity(args.a_gran, group),
-            grid=args.grid,
+            grid=args.a_grid or args.grid,
             clip_ratio=1.0,
         ),
         kv_cache=KVQuantSpec(
             k_bits=args.kv_bits,
             v_bits=args.kv_bits,
             granularity=_granularity(args.kv_gran, group),
-            grid=args.grid,
+            grid=args.kv_grid or args.grid,
             k_clip_ratio=1.0,
             v_clip_ratio=1.0,
         ),

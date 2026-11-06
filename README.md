@@ -21,7 +21,7 @@ Terminology:
 - **2:4 / 4:8** = OBR-style arbitrary N:M. The same names also select the hybrid mask policy: a `--pairwise-fraction` of their layers use the hardware pair layout, the rest use dense INT4.
 - **pairwise fraction** = fraction of least-sensitive layers using the hardware pair mask. `1.0` means all sparse pair layers; `0.0` means all dense N:M layers.
 - weight bits: 1-4 (1-3 stored as a little-endian bitstream, 4 as packed nibbles)
-- grid: mid-rise / mid-tread
+- grid: mid-rise / mid-tread (`--grid`; `--a-grid` / `--kv-grid` override activations and KV)
 - range: full / clip-search
 - weight quantizer: RTN / GPTQ
 - compensation: none / OBR / drift-OBR
