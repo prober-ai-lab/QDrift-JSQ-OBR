@@ -365,6 +365,11 @@ def make_regime_case(
         if sparse_joint:
             case.semi_weight = make_semi_structured(fp16_weight)
         case.kernel = "fp16_fallback"
+        # The dequantized weight owns the compute representation.  Compacted
+        # layouts expand codes and scales to full width; keeping them next
+        # to the fp16 weight triples the footprint (W3 7B runs out of memory).
+        case.packed = torch.empty(0, device="cuda", dtype=torch.uint8)
+        case.scales = torch.empty(0, device="cuda", dtype=torch.float16)
         if regime == "quant":
             case.mask = None
         return case
@@ -452,10 +457,10 @@ def run_regime_recipe(
             )
         if case.fp16_weight is None:
             raise ValueError(f"{case.name} has no quantized or fp16 weight")
-        if regime == "joint":
-            if case.semi_weight is None:
-                raise ValueError(f"{case.name} has no sparse weight")
+        if regime == "joint" and case.semi_weight is not None:
             return semi_structured_linear(x, case.semi_weight)
+        # Unstructured masks (or sparse acceleration disabled) have no 2:4
+        # layout; the masked fp16 weight already holds the pruned zeros.
         return torch.nn.functional.linear(x, case.fp16_weight)
     if regime == "sparse":
         if case.semi_weight is not None:
