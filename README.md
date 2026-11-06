@@ -123,7 +123,8 @@ results/benchmarks/<checkpoint_id>__<tasks>.json
 
 The unified benchmark loads each of the four real checkpoints once and reports:
 
-- `accuracy`: PPL and zero-shot
+- `accuracy`: PPL (WikiText-2 test and C4 validation, 2048-token chunks,
+  fp32 loss) and zero-shot
 - `efficiency`: real-kernel prefill/decode latency, throughput, load time,
   peak memory, checkpoint size and compression ratio
 

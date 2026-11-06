@@ -23,7 +23,7 @@ from benchmark.eval.runtime import (
 )
 from benchmark.kernels.lib.registry import kernel_plan
 from qdrift.compress.recipe import CompressionRecipe, variant_recipes
-from qdrift.data.dataloader import PPL_DATASETS, get_loaders
+from qdrift.data.dataloader import PPL_DATASETS, PPL_SPLITS, get_loaders
 
 __all__ = [
     "ACCURACY_TASKS",
@@ -57,29 +57,31 @@ DEVICE = "cuda"
 def ppl_eval(
     model: torch.nn.Module,
     chunks: list[torch.Tensor],
-    seqlen: int,
     device: str,
     batch_size: int = 1,
 ) -> tuple[float, int]:
-    """Evaluate fixed-length, non-overlapping PPL chunks."""
+    """Evaluate fixed-length, non-overlapping PPL chunks.
+
+    The loss is summed in fp32 over every predicted token.  An fp16 loss
+    rounds each batch mean to ~2e-3 nats, which quantizes PPL into ~0.1%
+    steps and hides real differences between recipes.
+    """
     if not chunks:
         raise ValueError("no evaluation chunks")
     nll = 0.0
     tokens = 0
     for start in range(0, len(chunks), batch_size):
-        group = chunks[start : start + batch_size]
-        inputs = torch.stack(group).to(device)
+        inputs = torch.stack(chunks[start : start + batch_size]).to(device)
         logits = model(inputs).logits
-        shift_logits = logits[:, :-1, :].contiguous()
-        shift_labels = inputs[:, 1:].contiguous()
-        loss = torch.nn.functional.cross_entropy(
-            shift_logits.view(-1, shift_logits.size(-1)),
-            shift_labels.view(-1),
-        )
-        count = len(group)
-        nll += float(loss.item()) * seqlen * count
-        tokens += seqlen * count
-    return math.exp(nll / max(tokens, 1)), tokens
+        # One row at a time keeps the fp32 copy of the logits small.
+        for row in range(inputs.shape[0]):
+            nll += torch.nn.functional.cross_entropy(
+                logits[row, :-1].float(),
+                inputs[row, 1:],
+                reduction="sum",
+            ).item()
+            tokens += inputs.shape[1] - 1
+    return math.exp(nll / tokens), tokens
 
 
 def zeroshot_eval(
@@ -118,7 +120,6 @@ def build_accuracy_result(
     tasks: tuple[str, ...],
     ppl_datasets: tuple[str, ...],
     ppl_seqlen: int,
-    ppl_chunks: int,
     zeroshot_tasks: tuple[str, ...],
 ) -> dict[str, object]:
     """Format per-regime PPL and zero-shot values."""
@@ -131,9 +132,9 @@ def build_accuracy_result(
             dense_ppl = dense[0]
             entry: dict[str, object] = {
                 "dataset": dataset,
-                "split": "validation",
+                "split": PPL_SPLITS[dataset],
                 "seqlen": ppl_seqlen,
-                "chunks": ppl_chunks,
+                "chunks": dense[1] // (ppl_seqlen - 1),
                 "tokens": dense[1],
                 "dense": dense_ppl,
             }
@@ -177,8 +178,8 @@ def evaluate_regimes(
     device: str = "cuda",
     tasks: tuple[str, ...] = ("ppl", "zeroshot", "e2e"),
     ppl_datasets: tuple[str, ...] = PPL_DATASETS,
-    ppl_seqlen: int = 1024,
-    ppl_chunks: int = 32,
+    ppl_seqlen: int = 2048,
+    ppl_chunks: int | None = None,
     zeroshot_tasks: tuple[str, ...] = ZEROSHOT_TASKS,
     batch_size: int = 16,
     seed: int = 42,
@@ -241,7 +242,6 @@ def evaluate_regimes(
                     dataset: ppl_eval(
                         model,
                         chunks[dataset],
-                        seqlen=ppl_seqlen,
                         device=device,
                         batch_size=batch_size,
                     )
@@ -282,7 +282,6 @@ def evaluate_regimes(
             accuracy_tasks,
             ppl_datasets,
             ppl_seqlen,
-            ppl_chunks,
             zeroshot_tasks,
         )
     if efficiency_requested:
