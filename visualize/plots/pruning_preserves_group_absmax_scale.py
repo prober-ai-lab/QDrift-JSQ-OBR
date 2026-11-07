@@ -16,7 +16,7 @@
     Overlap of the Q-WANDA pruned set with WANDA's, and the diagonal joint-loss
     proxy relative to WANDA (lambda = 1), against lambda.
 
-    python visualize/figures/pruning_preserves_group_absmax_scale.py
+    python visualize/plots/pruning_preserves_group_absmax_scale.py
 """
 
 from __future__ import annotations

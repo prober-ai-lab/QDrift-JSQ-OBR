@@ -16,7 +16,7 @@
 ``delta-by-layer-type``
     Delta at a fixed bit width for each layer type, against sparsity.
 
-    python visualize/figures/single_layer_prune_quant_error_interaction.py
+    python visualize/plots/single_layer_prune_quant_error_interaction.py
 """
 
 from __future__ import annotations

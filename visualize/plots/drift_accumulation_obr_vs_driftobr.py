@@ -16,7 +16,7 @@
     layer type (OBR run), and the share actually removed by each mode,
     1 - total / (injected + inherited).
 
-    python visualize/figures/drift_accumulation_obr_vs_driftobr.py
+    python visualize/plots/drift_accumulation_obr_vs_driftobr.py
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@
 Minitests are small, self-contained measurements that back a claim of the
 paper without being a main experiment.  They import only from ``qdrift`` and
 write JSON under ``results/minitests/``; the matching figure scripts live in
-``visualize/figures/``.
+``visualize/plots/``.
 
 The model is kept on the CPU and decoder blocks are streamed to the GPU, with
 as many blocks resident as the free memory allows.  This lets one LLaMA-7B
