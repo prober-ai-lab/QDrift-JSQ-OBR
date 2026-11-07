@@ -65,8 +65,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bits", type=int, default=2)
     parser.add_argument("--grid", choices=("midrise", "midtread"), default="midrise")
     parser.add_argument("--sparsity", type=float, default=0.5)
-    parser.add_argument("--criterion", choices=("wanda", "qwanda"), default="qwanda")
-    parser.add_argument("--lam", type=float, default=0.7)
+    parser.add_argument(
+        "--criterion", choices=("wanda", "qwanda", "qap"), default="qap"
+    )
+    parser.add_argument("--lam", type=float, default=0.7, help="Q-WANDA only")
     parser.add_argument("--max-blocks", type=int, default=0, help="0 = all blocks")
     parser.add_argument("--eval-samples", type=int, default=16)
     parser.add_argument("--eval-seqlen", type=int, default=2048)

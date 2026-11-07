@@ -3,7 +3,7 @@
 """Minitest: pruning keeps each group's absmax, so it cannot move the scales.
 
 Weight statistics over every linear layer of the (rotated) model, using the
-dense-path input norms ``||x_j||^2`` for WANDA / Q-WANDA:
+dense-path input norms ``||x_j||^2`` for WANDA and ``diag(H^-1)`` for QAP:
 
 ``absmax``
     For each quantization group (g64, g128, per channel), is the group's
@@ -18,8 +18,9 @@ dense-path input norms ``||x_j||^2`` for WANDA / Q-WANDA:
     activation-weighted quantization loss those weights carry.
 
 ``overlap``
-    How far Q-WANDA moves the mask away from WANDA as lambda decreases, and the
-    diagonal proxy of the joint loss ``sum_P w^2 x^2 + sum_R eps^2 x^2``.
+    How far QAP moves the mask away from WANDA at each bit width, and the
+    share of weights QAP scores negative (cheaper to prune than to quantize
+    in expectation, ``w^2 < step^2 / 12``).
 
     python minitests/prune_scale_invariance.py
 """
@@ -33,6 +34,7 @@ from pathlib import Path
 import common as C
 import torch
 
+from qdrift.prune.criteria import hessian_inverse_diag
 from qdrift.prune.mask import mask_from_score
 
 STEM = "prune_scale_invariance"
@@ -58,21 +60,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bits", type=C.ints, default=C.ints("1,2,3,4"))
     parser.add_argument("--grids", type=C.names, default=["midrise", "midtread"])
     parser.add_argument(
-        "--lambdas",
-        type=C.floats,
-        default=C.floats("0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1"),
-    )
-    parser.add_argument(
-        "--qwanda-lambda",
-        type=float,
-        default=0.7,
-        help="lambda of the Q-WANDA mask in the absmax table",
-    )
-    parser.add_argument(
-        "--qwanda-bits",
+        "--qap-bits",
         type=int,
         default=2,
-        help="mid-rise bit width whose error drives that Q-WANDA mask",
+        help="mid-rise bit width whose step drives the QAP mask in the absmax table",
     )
     parser.add_argument(
         "--exchange-sparsities", type=C.floats, default=C.floats("0.3,0.5,0.7")
@@ -92,7 +83,7 @@ def output_path(args: argparse.Namespace) -> Path:
             C.span(args.bits, "w"),
         ]
     )
-    variant = "+".join(args.grids) + f"_qw{args.qwanda_lambda:g}-w{args.qwanda_bits}"
+    variant = "+".join(args.grids) + f"_qap-w{args.qap_bits}"
     return C.result_path(STEM, args.model, setup, sweep, variant, args.suffix)
 
 
@@ -109,8 +100,9 @@ def absmax_rows(
     args: argparse.Namespace,
     weight: torch.Tensor,
     diag: torch.Tensor,
+    hinv: torch.Tensor,
     group_size: int,
-    eps: torch.Tensor,
+    step: torch.Tensor,
     head: dict,
 ) -> list[dict]:
     """Absmax retention of one granularity for every criterion and sparsity."""
@@ -121,9 +113,7 @@ def absmax_rows(
     criteria = {
         "wanda": C.score("wanda", weight, diag),
         "magnitude": C.score("magnitude", weight, diag),
-        f"qwanda{args.qwanda_lambda:g}": C.score(
-            "qwanda", weight, diag, eps, args.qwanda_lambda
-        ),
+        "qap": C.score("qap", weight, diag, step=step, hinv=hinv),
     }
     for criterion, crit in criteria.items():
         for sparsity in args.sparsities:
@@ -179,47 +169,38 @@ def exchange_row(
     return row
 
 
-def overlap_rows(
+def overlap_row(
     args: argparse.Namespace,
     weight: torch.Tensor,
-    diag: torch.Tensor,
+    hinv: torch.Tensor,
     pruned_wanda: torch.Tensor,
     key: tuple[int, str, int],
-    eps: torch.Tensor,
+    step: torch.Tensor,
     head: dict,
-) -> list[dict]:
-    """Q-WANDA mask overlap with WANDA and the diagonal proxy, per lambda."""
+) -> dict:
+    """QAP mask overlap with WANDA and the share of negative QAP scores."""
     group_size, grid, bits = key
-    rows = []
-    w2x = weight.pow(2) * diag.reshape(1, -1)
-    e2x = eps.pow(2) * diag.reshape(1, -1)
-    for lam in args.lambdas:
-        mask = mask_from_score(
-            C.score("qwanda", weight, diag, eps, lam),
-            args.overlap_sparsity,
-            "unstructured",
-        )
-        pruned = ~mask
-        rows.append(
-            {
-                **head,
-                "gran": C.gran_tag(group_size),
-                "grid": grid,
-                "bits": bits,
-                "lambda": lam,
-                "sparsity": args.overlap_sparsity,
-                "pruned_shared_with_wanda": float(
-                    (pruned & pruned_wanda).sum() / pruned_wanda.sum()
-                ),
-                "proxy_prune": float((w2x * pruned).sum()),
-                "proxy_quant": float((e2x * mask).sum()),
-            }
-        )
-    return rows
+    crit = C.score("qap", weight, hinv, step=step, hinv=hinv)
+    pruned = ~mask_from_score(crit, args.overlap_sparsity, "unstructured")
+    return {
+        **head,
+        "gran": C.gran_tag(group_size),
+        "grid": grid,
+        "bits": bits,
+        "sparsity": args.overlap_sparsity,
+        "pruned_shared_with_wanda": float(
+            (pruned & pruned_wanda).sum() / pruned_wanda.sum()
+        ),
+        "qap_negative": float((crit < 0).float().mean()),
+    }
 
 
 def measure_layer(
-    args: argparse.Namespace, weight: torch.Tensor, diag: torch.Tensor, head: dict
+    args: argparse.Namespace,
+    weight: torch.Tensor,
+    diag: torch.Tensor,
+    hinv: torch.Tensor,
+    head: dict,
 ) -> dict[str, list[dict]]:
     """All three tables for one layer."""
     clip = args.range == "clip"
@@ -238,19 +219,18 @@ def measure_layer(
                 key = (group_size, grid, bits)
                 scale = C.weight_scale(weight, bits, grid, group_size, clip).scale
                 eps = C.quant_error(weight, scale, bits, grid)
-                del scale
                 tables["exchange"].append(
                     exchange_row(args, weight, diag, masks, key, eps, head)
                 )
                 if group_size == args.group_size:
-                    tables["overlap"] += overlap_rows(
-                        args, weight, diag, pruned_wanda, key, eps, head
+                    tables["overlap"].append(
+                        overlap_row(args, weight, hinv, pruned_wanda, key, scale, head)
                     )
-                if grid == "midrise" and bits == args.qwanda_bits:
+                if grid == "midrise" and bits == args.qap_bits:
                     tables["absmax"] += absmax_rows(
-                        args, weight, diag, group_size, eps, head
+                        args, weight, diag, hinv, group_size, scale, head
                     )
-                del eps
+                del eps, scale
                 torch.cuda.empty_cache()
     return tables
 
@@ -259,9 +239,9 @@ def measure_layer(
 def main() -> None:
     """Run the minitest."""
     args = parse_args()
-    if "midrise" not in args.grids or args.qwanda_bits not in args.bits:
+    if "midrise" not in args.grids or args.qap_bits not in args.bits:
         raise SystemExit(
-            "the absmax table needs --grids midrise and --qwanda-bits in --bits"
+            "the absmax table needs --grids midrise and --qap-bits in --bits"
         )
     path = output_path(args)
     C.log(f"output {path}")
@@ -280,10 +260,12 @@ def main() -> None:
             continue
         start = time.time()
         grams, hidden = C.block_grams(streamer, index, hidden, kwargs, sources)
-        diags = {
-            source: torch.diagonal(gram.sum / gram.count).clamp_min(0)
-            for source, gram in grams.items()
-        }
+        diags, hinvs = {}, {}
+        for source, gram in grams.items():
+            hessian, system = gram.hessians(args.damping)
+            diags[source] = torch.diagonal(hessian).clamp_min(0)
+            hinvs[source] = hessian_inverse_diag(system)
+            del hessian, system
         del grams
         for layer_type in args.types:
             module = C.block_module(model, index, layer_type)
@@ -293,7 +275,8 @@ def main() -> None:
                 "type": layer_type,
                 "layer": C.layer_name(index, layer_type),
             }
-            layer = measure_layer(args, weight, diags[C.INPUT_SOURCE[layer_type]], head)
+            source = C.INPUT_SOURCE[layer_type]
+            layer = measure_layer(args, weight, diags[source], hinvs[source], head)
             for name, rows in layer.items():
                 tables[name] += rows
             del weight

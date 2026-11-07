@@ -12,9 +12,10 @@
     bit width and grid, and the share of the retained activation-weighted
     quantization loss carried by such weights under a WANDA mask.
 
-``qwanda-mask-shift-vs-lambda``
-    Overlap of the Q-WANDA pruned set with WANDA's, and the diagonal joint-loss
-    proxy relative to WANDA (lambda = 1), against lambda.
+``qap-mask-vs-wanda``
+    Share of the QAP pruned set shared with WANDA's, and the share of weights
+    QAP scores negative (expected rounding error above their magnitude), per
+    bit width and grid.
 
     python visualize/plots/prune_scale_invariance.py
 """
@@ -29,6 +30,7 @@ import style as S
 STEM = "prune_scale_invariance"
 GRAN_ORDER = ("g64", "g128", "ch")
 GRAN_LABEL = {"g64": "group 64", "g128": "group 128", "ch": "per channel"}
+CRITERION_LABEL = {"wanda": "WANDA", "magnitude": "magnitude", "qap": "QAP (W2 step)"}
 
 
 def absmax_figure(rows: list[dict], model: str) -> None:
@@ -50,10 +52,7 @@ def absmax_figure(rows: list[dict], model: str) -> None:
             ax.plot(xs, mean, color=color, marker="o", label=GRAN_LABEL[gran])
             ax.plot(xs, worst, color=color, linestyle=":", linewidth=1.0)
         ax.set_xlabel("sparsity $s$")
-        name = criterion.replace("qwanda", "Q-WANDA $\\lambda$=").replace(
-            "wanda", "WANDA"
-        )
-        S.panel_label(ax, name.replace("magnitude", "magnitude"))
+        S.panel_label(ax, CRITERION_LABEL.get(criterion, criterion))
     axes[0][0].set_ylabel("groups with absmax pruned (%)")
     axes[0][-1].legend(
         loc="upper left",
@@ -126,51 +125,40 @@ def exchange_figure(rows: list[dict], model: str, gran: str = "g128") -> None:
     S.save(fig, S.figure_name(STEM, model, f"better-pruned-than-quantized-{gran}"))
 
 
-def overlap_figure(rows: list[dict], model: str, grid: str = "midrise") -> None:
-    """Plot the Q-WANDA mask shift and loss proxy against lambda."""
-    rows = [r for r in rows if r["grid"] == grid]
-    if not rows:
-        return
+def overlap_figure(rows: list[dict], model: str) -> None:
+    """Plot how far QAP moves the mask from WANDA at each bit width."""
+    grids = [g for g in ("midrise", "midtread") if any(r["grid"] == g for r in rows)]
     bits = sorted({r["bits"] for r in rows})
-    proxy = defaultdict(dict)
-    for r in rows:
-        proxy[(r["layer"], r["bits"])][r["lambda"]] = (
-            r["proxy_prune"] + r["proxy_quant"]
-        )
-    fig, axes = S.plt.subplots(1, 2, figsize=(5.4, 2.2))
-    for b in bits:
-        color = S.bit_color(b, bits)
-        by_lam = defaultdict(list)
-        ratio = defaultdict(list)
-        for r in rows:
-            if r["bits"] != b:
-                continue
-            by_lam[r["lambda"]].append(r["pruned_shared_with_wanda"])
-            base = proxy[(r["layer"], b)].get(1.0)
-            if base:
-                ratio[r["lambda"]].append(proxy[(r["layer"], b)][r["lambda"]] / base)
-        xs = sorted(by_lam)
-        axes[0].plot(
-            xs,
-            [100 * np.mean(by_lam[x]) for x in xs],
-            color=color,
-            marker="o",
-            label=f"W{b}",
-        )
-        xs = sorted(ratio)
-        axes[1].plot(xs, [S.geomean(ratio[x]) for x in xs], color=color, marker="o")
     sparsity = rows[0]["sparsity"]
-    axes[0].set_ylabel("pruned set shared with WANDA (%)")
-    axes[1].set_ylabel("diag. joint-loss proxy / WANDA")
-    axes[1].axhline(1, color=S.AXIS, linewidth=0.8)
-    axes[1].set_yscale("log")
-    for ax in axes:
-        ax.set_xlabel(r"Q-WANDA $\lambda$")
-    S.panel_label(axes[0], f"mask overlap, s = {sparsity:g}, {S.GRID_LABEL[grid]}")
-    S.panel_label(axes[1], "joint-loss proxy (geo. mean)")
-    axes[0].legend(loc="lower right")
+    fig, axes = S.plt.subplots(1, 2, figsize=(5.6, 2.2))
+    width = 0.8 / len(grids)
+    panels = (
+        ("pruned_shared_with_wanda", f"pruned set shared with WANDA, s = {sparsity:g}"),
+        ("qap_negative", r"weights with $w^2<\Delta^2/12$"),
+    )
+    for ax, (key, title) in zip(axes, panels):
+        for k, grid in enumerate(grids):
+            xs, ys = [], []
+            for x, b in enumerate(bits):
+                values = [r[key] for r in rows if (r["grid"], r["bits"]) == (grid, b)]
+                if values:
+                    xs.append(x + (k - (len(grids) - 1) / 2) * width)
+                    ys.append(100 * np.mean(values))
+            ax.bar(
+                xs,
+                ys,
+                width=width * 0.92,
+                color=S.GRID_COLOR[grid],
+                label=S.GRID_LABEL[grid],
+            )
+        ax.set_xticks(range(len(bits)), [f"W{b}" for b in bits])
+        ax.set_ylabel("%")
+        ax.grid(axis="x", visible=False)
+        S.panel_label(ax, title)
+    axes[0].set_ylim(0, 100)
+    axes[1].legend(loc="upper right")
     fig.tight_layout()
-    S.save(fig, S.figure_name(STEM, model, f"qwanda-mask-shift-vs-lambda-{grid}"))
+    S.save(fig, S.figure_name(STEM, model, "qap-mask-vs-wanda"))
 
 
 def main() -> None:
@@ -180,12 +168,12 @@ def main() -> None:
     payloads = S.load(STEM, args)
     absmax = S.table(payloads, "absmax", ("layer", "gran", "criterion", "sparsity"))
     exchange = S.table(payloads, "exchange", ("layer", "gran", "grid", "bits"))
-    overlap = S.table(payloads, "overlap", ("layer", "gran", "grid", "bits", "lambda"))
+    overlap = S.table(payloads, "overlap", ("layer", "gran", "grid", "bits"))
     absmax_figure(absmax, args.model)
     for gran in sorted({r["gran"] for r in exchange}):
         exchange_figure(exchange, args.model, gran)
-    for grid in ("midrise", "midtread"):
-        overlap_figure(overlap, args.model, grid)
+    if overlap and "lambda" not in overlap[0]:
+        overlap_figure(overlap, args.model)
 
 
 if __name__ == "__main__":
