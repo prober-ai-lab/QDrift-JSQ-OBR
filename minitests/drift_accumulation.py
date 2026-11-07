@@ -36,6 +36,7 @@ import torch
 
 from qdrift.compress.pipeline import _quantize_layer
 from qdrift.compress.recipe import (
+    PRUNING_CRITERIA,
     CompensationSpec,
     CompressionRecipe,
     GranularitySpec,
@@ -65,10 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bits", type=int, default=2)
     parser.add_argument("--grid", choices=("midrise", "midtread"), default="midrise")
     parser.add_argument("--sparsity", type=float, default=0.5)
-    parser.add_argument(
-        "--criterion", choices=("wanda", "qwanda", "qap"), default="qap"
-    )
-    parser.add_argument("--lam", type=float, default=0.7, help="Q-WANDA only")
+    parser.add_argument("--criterion", choices=PRUNING_CRITERIA, default="qap")
     parser.add_argument("--max-blocks", type=int, default=0, help="0 = all blocks")
     parser.add_argument("--eval-samples", type=int, default=16)
     parser.add_argument("--eval-seqlen", type=int, default=2048)
@@ -79,7 +77,7 @@ def output_path(args: argparse.Namespace) -> Path:
     """Result file named after the recipe and the compensation modes."""
     setup = f"rot-{args.rotation}_{args.nsamples}x{args.seqlen}"
     gran = C.gran_tag(args.group_size)
-    crit = f"qwanda{args.lam:g}" if args.criterion == "qwanda" else args.criterion
+    crit = args.criterion
     grid = "mr" if args.grid == "midrise" else "mt"
     config = f"w{args.bits}_{gran}_{grid}_{args.range}_u{args.sparsity:g}_{crit}"
     if args.max_blocks:
@@ -107,7 +105,6 @@ def make_recipe(args: argparse.Namespace, comp: str) -> CompressionRecipe:
             sparsity=args.sparsity,
             structure="unstructured",
             criterion=args.criterion,
-            lam=args.lam,
         ),
         rotation=RotationSpec(args.rotation, args.seed),
         compensation=CompensationSpec(comp, args.alpha, args.damping),

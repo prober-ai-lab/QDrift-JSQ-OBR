@@ -8,7 +8,7 @@ A checkpoint id is built from the axes that define an experiment:
     [_{agran}][_{kvgran}]__{compensation}[__h{hash}]
 
 Example:
-    llama2-7b__0.5w4a4kv4__qwanda0.7_mr_rc_rtn_pg128_an_kn__drift
+    llama2-7b__0.5w4a4kv4__qap_mr_rc_rtn_pg128_an_kn__drift
 
 The trailing ``h{hash}`` is only added when a knob that is not encoded in the
 readable part differs from its default (rotation seed, exact clip set, ...).
@@ -25,6 +25,7 @@ from typing import Any
 
 DEFAULT_CLIP_RHOS: tuple[float, ...] = (0.85, 0.9, 0.95, 1.0)
 SPARSITY_VALUES: tuple[float, ...] = tuple(round(index / 10, 1) for index in range(10))
+PRUNING_CRITERIA: tuple[str, ...] = ("magnitude", "wanda", "sparsegpt", "qap")
 
 
 def _slug(name: str) -> str:
@@ -231,7 +232,6 @@ class PruneSpec:
     sparsity: float = 0.5
     structure: str = "4:8"
     criterion: str = "wanda"
-    lam: float = 0.7
 
     def validate(self) -> None:
         if self.sparsity not in SPARSITY_VALUES:
@@ -251,17 +251,14 @@ class PruneSpec:
             )
         if self.structure == "none" and self.sparsity != 0.0:
             raise ValueError("no pruning requires sparsity 0.0")
-        if self.criterion not in ("wanda", "qwanda", "qap", "magnitude", "random"):
+        if self.criterion not in PRUNING_CRITERIA:
             raise ValueError(f"unknown criterion {self.criterion}")
-        if not 0.0 <= self.lam <= 1.0:
-            raise ValueError("lambda must be in [0, 1]")
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "sparsity": self.sparsity,
             "structure": self.structure,
             "criterion": self.criterion,
-            "lambda": self.lam,
         }
 
     @classmethod
@@ -270,7 +267,6 @@ class PruneSpec:
             sparsity=round(float(data.get("sparsity", data.get("ratio", 0.5))), 1),
             structure=str(data.get("structure", "4:8")),
             criterion=str(data.get("criterion", "wanda")),
-            lam=float(data.get("lambda", 0.7)),
         )
 
 
@@ -460,8 +456,6 @@ class CompressionRecipe:
         return tag
 
     def _criterion_tag(self) -> str:
-        if self.prune.criterion == "qwanda":
-            return f"qwanda{self.prune.lam:g}"
         return self.prune.criterion
 
     def _kv_bits_tag(self) -> str:

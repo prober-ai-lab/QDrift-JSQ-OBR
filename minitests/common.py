@@ -55,7 +55,7 @@ from qdrift.obr.obr import (  # noqa: E402
 from qdrift.prune.criteria import (  # noqa: E402
     magnitude_score,
     qap_score,
-    qwanda_score,
+    sparsegpt_score,
     wanda_score,
 )
 from qdrift.quant.quantize import fake_quantize, qrange  # noqa: E402
@@ -496,24 +496,22 @@ def score(
     criterion: str,
     weight: torch.Tensor,
     diag: torch.Tensor,
-    eps: torch.Tensor | None = None,
-    lam: float = 1.0,
     step: torch.Tensor | None = None,
     hinv: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Pruning score of one criterion (larger means keep).
 
-    ``diag`` is ``E[x_j^2]``; QAP needs the quantization ``step`` and
-    ``hinv = diag(H^-1)`` instead.
+    ``diag`` is ``E[x_j^2]`` (WANDA); SparseGPT and QAP need
+    ``hinv = diag(H^-1)``, and QAP also the quantization ``step``.
     """
-    if criterion == "wanda":
-        return wanda_score(weight, diag)
-    if criterion == "qwanda":
-        return qwanda_score(weight, diag, eps, lam)
-    if criterion == "qap":
-        return qap_score(weight, hinv, step)
     if criterion == "magnitude":
         return magnitude_score(weight)
+    if criterion == "wanda":
+        return wanda_score(weight, diag)
+    if criterion == "sparsegpt":
+        return sparsegpt_score(weight, hinv)
+    if criterion == "qap":
+        return qap_score(weight, hinv, step)
     raise ValueError(f"unknown criterion {criterion}")
 
 

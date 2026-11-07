@@ -56,14 +56,13 @@ from qdrift.prune.criteria import (
     hessian_inverse_diag,
     magnitude_score,
     qap_score,
-    qwanda_score,
-    random_score,
+    sparsegpt_score,
     wanda_score,
 )
 from qdrift.prune.mask import mask_from_score
 from qdrift.quant.gptq import gptq_quantize, rtn_quantize
 from qdrift.quant.pack import pack_codes
-from qdrift.quant.quantize import dequantize, fake_quantize, qrange
+from qdrift.quant.quantize import dequantize, qrange
 from qdrift.quant.scale import compute_scale
 
 __all__ = [
@@ -130,23 +129,20 @@ def _score(
     criterion: str,
     weight: torch.Tensor,
     diag: torch.Tensor,
-    eps: torch.Tensor,
-    lam: float,
-    step: torch.Tensor | None = None,
-    hessian_system: torch.Tensor | None = None,
+    step: torch.Tensor,
+    hessian_system: torch.Tensor | None,
 ) -> torch.Tensor:
-    if criterion == "wanda":
-        return wanda_score(weight, diag)
-    if criterion == "qwanda":
-        return qwanda_score(weight, diag, eps, lam)
-    if criterion == "qap":
-        if step is None or hessian_system is None:
-            raise ValueError("QAP needs the quantization step and the layer Hessian")
-        return qap_score(weight, hessian_inverse_diag(hessian_system), step)
     if criterion == "magnitude":
         return magnitude_score(weight)
-    if criterion == "random":
-        return random_score(weight)
+    if criterion == "wanda":
+        return wanda_score(weight, diag)
+    if hessian_system is None:
+        raise ValueError(f"{criterion} needs the layer Hessian")
+    hessian_inv_diag = hessian_inverse_diag(hessian_system)
+    if criterion == "sparsegpt":
+        return sparsegpt_score(weight, hessian_inv_diag)
+    if criterion == "qap":
+        return qap_score(weight, hessian_inv_diag, step)
     raise ValueError(f"unknown criterion {criterion}")
 
 
@@ -250,15 +246,6 @@ def _quantize_layer(
             and recipe.weight.granularity.kind in ("channel", "tensor")
         ),
     )
-    quant_error = (
-        fake_quantize(
-            weight_rot,
-            full_scale.scale,
-            qparams,
-            recipe.weight.grid,
-        )
-        - weight_rot
-    )
     # Masking uses the compressed-path Hessian when dual-path calibration is
     # available; otherwise it falls back to the full-precision Hessian.
     if hessian_fp is not None:
@@ -269,10 +256,8 @@ def _quantize_layer(
         recipe.prune.criterion,
         weight_rot,
         diag,
-        quant_error,
-        recipe.prune.lam,
-        step=full_scale.scale,
-        hessian_system=hessian_system,
+        full_scale.scale,
+        hessian_system,
     )
     base_structure = recipe.prune.structure
     structure = base_structure
@@ -319,7 +304,6 @@ def _quantize_layer(
         retained_scale = None
         quant_scale = full_scale.scale.gather(1, keep)
     hessian_fp = None
-    quant_error = None
     score = None
     torch.cuda.empty_cache()
 
@@ -747,7 +731,7 @@ def compress(
         and 0.0 < recipe.pairwise_fraction < 1.0
     )
     need_hessian = (
-        recipe.prune.criterion in ("wanda", "qwanda", "qap")
+        recipe.prune.criterion in ("wanda", "sparsegpt", "qap")
         or recipe.compensation.method != "none"
         or recipe.weight.method == "gptq"
         or needs_pairwise_selection

@@ -14,28 +14,25 @@ def wanda_score(weight: torch.Tensor, scaler_row: torch.Tensor) -> torch.Tensor:
     return weight.abs() * scaler_row.clamp_min(0).sqrt().reshape(1, -1)
 
 
-def qwanda_score(
-    weight: torch.Tensor,
-    scaler_row: torch.Tensor,
-    quant_error: torch.Tensor,
-    lam: float,
-) -> torch.Tensor:
-    """Return the Q-WANDA score.
-
-    ``S_ij^2 = max(0, lambda * w_ij^2 - (1-lambda) * eps_ij^2) * ||x_j||^2``,
-    where ``eps = Q(w) - w`` is the per-layer quantization error.
-    """
-    coefficient = lam * weight.pow(2) - (1.0 - lam) * quant_error.pow(2)
-    coefficient = coefficient.clamp_min(0)
-    return coefficient * scaler_row.clamp_min(0).reshape(1, -1)
-
-
 def hessian_inverse_diag(system: torch.Tensor) -> torch.Tensor:
     """Return ``diag(H^-1)`` of the damped, symmetric layer Hessian."""
     factor, info = torch.linalg.cholesky_ex(system)
     if bool(info):
         return torch.diagonal(torch.linalg.inv(system))
     return torch.diagonal(torch.cholesky_inverse(factor))
+
+
+def sparsegpt_score(
+    weight: torch.Tensor,
+    hessian_inv_diag: torch.Tensor,
+) -> torch.Tensor:
+    """Return the SparseGPT (OBS) saliency ``w_ij^2 / [H^-1]_jj``.
+
+    This is the loss of pruning ``w_ij`` when the other weights of the row are
+    compensated; the mask is chosen in one shot from the dense weights, and the
+    compensation itself is left to OBR.
+    """
+    return weight.pow(2) / hessian_inv_diag.reshape(1, -1)
 
 
 def qap_score(
@@ -57,16 +54,3 @@ def qap_score(
 def magnitude_score(weight: torch.Tensor) -> torch.Tensor:
     """Return the magnitude score."""
     return weight.abs()
-
-
-def random_score(
-    weight: torch.Tensor,
-    generator: torch.Generator | None = None,
-) -> torch.Tensor:
-    """Return a random score for a random-pruning baseline."""
-    return torch.rand(
-        weight.shape,
-        device=weight.device,
-        dtype=weight.dtype,
-        generator=generator,
-    )

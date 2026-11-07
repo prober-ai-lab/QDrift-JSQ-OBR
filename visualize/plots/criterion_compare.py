@@ -19,24 +19,14 @@ import style as S
 
 STEM = "criterion_compare"
 KEYS = ("layer", "grid", "bits", "structure", "criterion", "comp")
-ORDER = (
-    "qwanda0.7",
-    "obs",
-    "exchange",
-    "exchange_exp",
-    "obs_exchange",
-    "obs_exchange_exp",
-)
+ORDER = ("magnitude", "sparsegpt", "qap")
 LABEL = {
-    "qwanda0.7": r"Q-WANDA $\lambda$=0.7",
-    "obs": r"OBS $w^2/[H^{-1}]_{jj}$",
-    "exchange": r"$(w^2-\epsilon^2)\,h$",
-    "exchange_exp": r"$(w^2-\Delta^2/12)\,h$",
-    "obs_exchange": r"$(w^2-\epsilon^2)/[H^{-1}]_{jj}$",
-    "obs_exchange_exp": r"QAP $(w^2-\Delta^2/12)/[H^{-1}]_{jj}$",
+    "magnitude": "magnitude",
+    "sparsegpt": r"SparseGPT $w^2/[H^{-1}]_{jj}$",
+    "qap": r"QAP $(w^2-\Delta^2/12)/[H^{-1}]_{jj}$",
 }
 STRUCT_LABEL = {"u0.5": "unstructured 50%", "u0.7": "unstructured 70%", "2to4": "2:4"}
-COLORS = S.SERIES + ("#6250d6",)
+COLORS = S.SERIES
 
 
 def ratios(rows: list[dict]) -> dict:

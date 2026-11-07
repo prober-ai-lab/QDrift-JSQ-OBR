@@ -113,6 +113,7 @@ def absmax_rows(
     criteria = {
         "wanda": C.score("wanda", weight, diag),
         "magnitude": C.score("magnitude", weight, diag),
+        "sparsegpt": C.score("sparsegpt", weight, diag, hinv=hinv),
         "qap": C.score("qap", weight, diag, step=step, hinv=hinv),
     }
     for criterion, crit in criteria.items():

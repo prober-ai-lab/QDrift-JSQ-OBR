@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from benchmark.eval.evaluation import PPL_DATASETS, ZEROSHOT_TASKS, run_benchmark
 from qdrift.compress.pipeline import compress_regimes, parse_devices
 from qdrift.compress.recipe import (
+    PRUNING_CRITERIA,
     ActivationQuantSpec,
     CompensationSpec,
     CompressionRecipe,
@@ -53,8 +54,7 @@ def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--kv-bits", type=int, default=4)
     parser.add_argument("--sparsity", type=_sparsity, default=0.5)
     parser.add_argument("--structure", choices=("unstructured", "2:4", "4:8"), default="4:8")
-    parser.add_argument("--criterion", choices=("wanda", "qwanda", "qap", "magnitude", "random"), default="wanda")
-    parser.add_argument("--lambda", dest="lam", type=float, default=0.7, help="Q-WANDA only")
+    parser.add_argument("--criterion", choices=PRUNING_CRITERIA, default="wanda")
     parser.add_argument("--w-gran", choices=("tensor", "channel", "group"), default="channel")
     parser.add_argument("--w-group-size", "--group-size", dest="w_group_size", type=int, default=128)
     parser.add_argument("--a-gran", choices=("tensor", "token", "group"), default="token")
@@ -138,7 +138,6 @@ def _build_recipe(args: argparse.Namespace) -> CompressionRecipe:
             sparsity=args.sparsity,
             structure=args.structure,
             criterion=args.criterion,
-            lam=args.lam,
         ),
         rotation=RotationSpec(mode=args.rotation, seed=args.seed),
         compensation=CompensationSpec(method=args.comp, damping=args.damping),

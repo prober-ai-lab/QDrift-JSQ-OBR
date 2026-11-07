@@ -7,8 +7,8 @@ Supported axes:
 
 - sparsity: `2:4` / `4:8` require `0.5`; `unstructured` uses `--sparsity`; dense/quant baselines use no mask
 - pruning structure: `2:4`, `4:8` (hybrid dense/pair) and `unstructured`
-- pruning criterion: WANDA, QAP (quantization-aware, `(w^2 - step^2/12) / [H^-1]_jj`),
-  Q-WANDA (`--lambda`), magnitude, random
+- pruning criterion: magnitude, WANDA, SparseGPT (`w^2 / [H^-1]_jj`), and QAP
+  (quantization-aware, `(w^2 - step^2/12) / [H^-1]_jj`)
 - weight/activation/KV granularity: per-tensor, per-channel, per-token, per-group
 - WAKV: weight/activation/KV 1-4 bit, with INT8 Tensor Core GEMM
 - 2:4 + INT4 weights (W4A16): Sparse-Marlin FP16xINT4 sparse kernel

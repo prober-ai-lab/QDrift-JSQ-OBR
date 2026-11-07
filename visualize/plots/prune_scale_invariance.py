@@ -30,7 +30,12 @@ import style as S
 STEM = "prune_scale_invariance"
 GRAN_ORDER = ("g64", "g128", "ch")
 GRAN_LABEL = {"g64": "group 64", "g128": "group 128", "ch": "per channel"}
-CRITERION_LABEL = {"wanda": "WANDA", "magnitude": "magnitude", "qap": "QAP (W2 step)"}
+CRITERION_LABEL = {
+    "wanda": "WANDA",
+    "magnitude": "magnitude",
+    "sparsegpt": "SparseGPT",
+    "qap": "QAP (W2 step)",
+}
 
 
 def absmax_figure(rows: list[dict], model: str) -> None:
@@ -172,7 +177,7 @@ def main() -> None:
     absmax_figure(absmax, args.model)
     for gran in sorted({r["gran"] for r in exchange}):
         exchange_figure(exchange, args.model, gran)
-    if overlap and "lambda" not in overlap[0]:
+    if overlap:
         overlap_figure(overlap, args.model)
 
 

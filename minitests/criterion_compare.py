@@ -1,28 +1,23 @@
 # Copyright (c) 2026 QDrift Authors. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Minitest: which quantization-aware pruning score lowers the joint error?
+"""Minitest: which pruning criterion gives the lowest joint error?
 
 For selected layers of the (rotated) model, build the mask with each pruning
-score below, prune + quantize (dense-weight scale), optionally compensate with
+criterion, prune + quantize (dense-weight scale), optionally compensate with
 OBR, and measure the joint layer-output error
 
     rel_err = tr(dW H dW^T) / tr(W H W^T),     dW = W_hat - W.
 
-Scores (larger = keep; ``h_j = E[x_j^2]``, ``g_j = 1 / [H^-1]_jj``):
+Criteria (larger = keep; ``h_j = E[x_j^2]``, ``g_j = 1 / [H^-1]_jj``):
 
-    wanda             w^2 h                      pruning only
-    qwanda0.7         max(0, .7 w^2 - .3 eps^2) h
-    obs               w^2 g                      pruning only, OBS saliency
-    exchange          (w^2 - eps^2) h            realized rounding error
-    exchange_exp      (w^2 - D^2/12) h           expected rounding error
-    obs_exchange      (w^2 - eps^2) g
-    obs_exchange_exp  (w^2 - D^2/12) g
+    magnitude   |w|
+    wanda       w^2 h                    pruning loss, no compensation
+    sparsegpt   w^2 g                    pruning loss after compensation (OBS)
+    qap         (w^2 - D^2/12) g         minus the expected rounding loss
 
-``eps = Q(w) - w`` is the rounding error with the dense-weight scale and ``D``
-the quantization step of the weight's group; ``D^2 / 12`` is the expected
-squared rounding error, which does not depend on the exact value that OBR
-compensation later rounds.  The error is row-decomposable, so it is measured
-on ``--rows`` random rows.
+``D`` is the quantization step of the weight's group, so ``D^2 / 12`` is the
+expected squared rounding error of a retained weight.  The error is
+row-decomposable, so it is measured on ``--rows`` random rows.
 
     python minitests/criterion_compare.py --blocks 1,15,30
 """
@@ -36,18 +31,11 @@ from pathlib import Path
 import common as C
 import torch
 
+from qdrift.prune.criteria import hessian_inverse_diag
 from qdrift.prune.mask import mask_from_score
 
 STEM = "criterion_compare"
-CRITERIA = (
-    "wanda",
-    "qwanda0.7",
-    "obs",
-    "exchange",
-    "exchange_exp",
-    "obs_exchange",
-    "obs_exchange_exp",
-)
+CRITERIA = ("magnitude", "wanda", "sparsegpt", "qap")
 STRUCTURES = {
     "u0.5": ("unstructured", 0.5),
     "u0.7": ("unstructured", 0.7),
@@ -85,33 +73,6 @@ def output_path(args: argparse.Namespace) -> Path:
     return C.result_path(STEM, args.model, setup, sweep, variant, args.suffix)
 
 
-def scores(
-    criterion: str,
-    weight: torch.Tensor,
-    h: torch.Tensor,
-    g: torch.Tensor,
-    eps: torch.Tensor,
-    step: torch.Tensor,
-) -> torch.Tensor:
-    """Score of one criterion; ``h`` and ``g`` are per input column."""
-    w2 = weight.pow(2)
-    if criterion == "wanda":
-        return w2 * h
-    if criterion == "qwanda0.7":
-        return (0.7 * w2 - 0.3 * eps.pow(2)).clamp_min(0) * h
-    if criterion == "obs":
-        return w2 * g
-    if criterion == "exchange":
-        return (w2 - eps.pow(2)) * h
-    if criterion == "exchange_exp":
-        return (w2 - step.pow(2) / 12) * h
-    if criterion == "obs_exchange":
-        return (w2 - eps.pow(2)) * g
-    if criterion == "obs_exchange_exp":
-        return (w2 - step.pow(2) / 12) * g
-    raise ValueError(f"unknown criterion {criterion}")
-
-
 @torch.no_grad()
 def measure_layer(
     args: argparse.Namespace,
@@ -122,9 +83,8 @@ def measure_layer(
 ) -> list[dict]:
     """Error rows of one layer for every criterion, structure, and bit width."""
     rows = []
-    h = torch.diagonal(hessian).clamp_min(0).reshape(1, -1)
-    g = 1.0 / torch.diagonal(torch.cholesky_inverse(torch.linalg.cholesky(system)))
-    g = g.reshape(1, -1)
+    diag = torch.diagonal(hessian).clamp_min(0)
+    hinv = hessian_inverse_diag(system)
     subset = C.row_subset(weight.shape[0], args.rows, args.seed, weight.device)
     if subset is not None:
         weight = weight[subset]
@@ -135,9 +95,8 @@ def measure_layer(
             continue
         # Scales are row-local, so the row subset sees the full layer's scales.
         step = C.weight_scale(weight, bits, args.grid, args.group_size, clip).scale
-        eps = C.quant_error(weight, step, bits, args.grid)
         for criterion in args.criteria:
-            crit = scores(criterion, weight, h, g, eps, step)
+            crit = C.score(criterion, weight, diag, step=step, hinv=hinv)
             for tag in args.structures:
                 structure, sparsity = STRUCTURES[tag]
                 mask = mask_from_score(crit, sparsity, structure)
@@ -163,7 +122,7 @@ def measure_layer(
                         }
                     )
                     del new
-        del step, eps
+        del step
         torch.cuda.empty_cache()
     return rows
 
