@@ -15,38 +15,58 @@ from qdrift.quarot.hadamard import (
 )
 from qdrift.quarot.normalization import RMSNorm
 
+_CHUNK_ROWS = 8192
+
 
 def fuse_ln_linear(
     layernorm: torch.nn.Module,
     linear_layers: Iterable[torch.nn.Linear],
 ) -> None:
-    """Fuse a normalization scale into adjacent linear layers."""
+    """Fuse a normalization scale into adjacent linear layers.
+
+    Row chunks bound the fp64 temporary: large-vocabulary heads such as
+    Llama-3's 128k x 4096 lm_head would otherwise need multi-GB temporaries.
+    """
+    scale = layernorm.weight.double()
     for linear in linear_layers:
         dtype = linear.weight.dtype
-        weight = linear.weight.data.double()
-        fused = weight * layernorm.weight.double()
-        linear.weight.data = fused.to(dtype)
-
+        weight = linear.weight.data
+        rows = weight.shape[0]
+        chunk = min(rows, _CHUNK_ROWS)
+        bias_term = None
         if getattr(layernorm, "bias", None) is not None:
+            beta = layernorm.bias.double()
+            bias_term = torch.empty(rows, device=weight.device, dtype=torch.float64)
+            for start in range(0, rows, chunk):
+                end = min(start + chunk, rows)
+                bias_term[start:end] = weight[start:end].double() @ beta
+        for start in range(0, rows, chunk):
+            end = min(start + chunk, rows)
+            fused = weight[start:end].double() * scale
+            weight[start:end] = fused.to(dtype)
+        if bias_term is not None:
             if linear.bias is None:
                 linear.bias = torch.nn.Parameter(
-                    torch.zeros(linear.out_features, dtype=torch.float64)
+                    torch.zeros(
+                        linear.out_features,
+                        dtype=torch.float64,
+                        device=weight.device,
+                    )
                 )
-            bias = linear.bias.data.double()
-            bias = bias + torch.matmul(weight, layernorm.bias.double())
+            bias = linear.bias.data.double() + bias_term
             linear.bias.data = bias.to(dtype)
 
 
 def fuse_layer_norms(model: torch.nn.Module) -> None:
     """Fuse RMSNorm scales and replace norms with weightless RMSNorm."""
     hidden_size = model.config.hidden_size
-    # Qwen2.5-0.5B ties the embedding and lm_head weights.  Rotation/fusion
-    # treats them in different bases, so break the tie first.
+    # Models with tied embedding and lm_head weights need the tie broken:
+    # rotation/fusion treats the two in different bases.
     if getattr(model.config, "tie_word_embeddings", False):
         model.lm_head.weight = torch.nn.Parameter(model.lm_head.weight.data.clone())
         model.config.tie_word_embeddings = False
     embeddings = model.model.embed_tokens
-    # Llama/Qwen use RMSNorm, for which rotation invariance already holds; the
+    # Llama uses RMSNorm, for which rotation invariance already holds; the
     # SliceGPT-style embedding mean subtraction is only needed for LayerNorm.
     eps = float(getattr(model.config, "rms_norm_eps", 1e-5))
 
@@ -110,20 +130,25 @@ def _rotate_weight_output(
         linear.bias.data = torch.matmul(q.T, bias).to(dtype=dtype)
 
 
+def _rotate_rows(weight: torch.Tensor, q: torch.Tensor, dtype: torch.dtype) -> None:
+    rows = weight.shape[0]
+    chunk = min(rows, _CHUNK_ROWS)
+    for start in range(0, rows, chunk):
+        end = min(start + chunk, rows)
+        part = weight[start:end].to(device=q.device, dtype=torch.float64)
+        weight[start:end] = torch.matmul(part, q).to(dtype=dtype)
+
+
 def rotate_embeddings(model: torch.nn.Module, q: torch.Tensor) -> None:
     """Rotate the input embedding matrix."""
     embedding = model.model.embed_tokens
-    dtype = embedding.weight.dtype
-    weight = embedding.weight.data.to(device=q.device, dtype=torch.float64)
-    embedding.weight.data = torch.matmul(weight, q).to(dtype=dtype)
+    _rotate_rows(embedding.weight.data, q, embedding.weight.dtype)
 
 
 def rotate_lm_head(model: torch.nn.Module, q: torch.Tensor) -> None:
     """Rotate the language-model head."""
     head = model.lm_head
-    dtype = head.weight.dtype
-    weight = head.weight.data.to(device=q.device, dtype=torch.float64)
-    head.weight.data = torch.matmul(weight, q).to(dtype=dtype)
+    _rotate_rows(head.weight.data, q, head.weight.dtype)
 
 
 def rotate_attention(

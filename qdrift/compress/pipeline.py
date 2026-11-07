@@ -79,8 +79,8 @@ def _hessian_from_inputs(inputs: torch.Tensor) -> torch.Tensor:
     return 0.5 * (hessian + hessian.t())
 
 
-_STREAM_HESSIAN_ELEMENTS = 1 << 29
-_HESSIAN_STREAM_ROWS = 8192
+_STREAM_HESSIAN_ELEMENTS = 1 << 27
+_HESSIAN_STREAM_ROWS = 4096
 
 
 @torch.no_grad()
