@@ -14,9 +14,9 @@ cd "$ROOT"
 RECIPE=(
   --model llama2-7b
   --sparsity 0.5 --structure unstructured --pairwise-fraction 0
-  --criterion qwanda --lambda 0.7
-  --w-bits 2 --w-gran group --w-group-size 128 --grid midrise
-  --a-bits 16 --kv-bits 16
+  --criterion qwanda --lambda 0.6
+  --w-bits 4 --w-gran channel --grid midtread
+  --a-bits 4 --kv-bits 4
   --quant rtn --range clip --comp drift --damping 0.01
   --rotation hadamard
   --nsamples 32 --seqlen 1024 --batch-size 8
