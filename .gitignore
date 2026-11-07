@@ -40,8 +40,14 @@ logs/*
 !logs/.gitkeep
 figs/*
 !figs/.gitkeep
+!figs/pdf/
+figs/pdf/*
+!figs/pdf/.gitkeep
 tables/*
 !tables/.gitkeep
+!tables/pdf/
+tables/pdf/*
+!tables/pdf/.gitkeep
 results/*
 !results/.gitkeep
 runs/
