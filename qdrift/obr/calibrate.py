@@ -51,7 +51,7 @@ def layer_groups(
     model: torch.nn.Module,
     layers: dict[str, torch.nn.Linear],
 ) -> list[LayerGroup]:
-    """Build input-sharing groups for a Llama/Qwen-style decoder."""
+    """Build input-sharing groups for a Llama-style decoder."""
     modules = dict(model.named_modules())
     by_block: dict[str, dict[str, str]] = {}
     consumed: set[str] = set()

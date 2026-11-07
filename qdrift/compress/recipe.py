@@ -8,7 +8,7 @@ A checkpoint id is built from the axes that define an experiment:
     [_{agran}][_{kvgran}]__{compensation}[__h{hash}]
 
 Example:
-    qwen2.5-0.5b__0.5w4a4kv4__qwanda0.7_mr_rc_rtn_pg128_an_kn__drift
+    llama2-7b__0.5w4a4kv4__qwanda0.7_mr_rc_rtn_pg128_an_kn__drift
 
 The trailing ``h{hash}`` is only added when a knob that is not encoded in the
 readable part differs from its default (rotation seed, exact clip set, ...).
@@ -332,7 +332,7 @@ class CompensationSpec:
 class CompressionRecipe:
     """Everything needed to reproduce one compressed checkpoint."""
 
-    model: str = "qwen2.5-0.5b"
+    model: str = "llama2-7b"
     weight: WeightQuantSpec = field(default_factory=WeightQuantSpec)
     activation: ActivationQuantSpec = field(default_factory=ActivationQuantSpec)
     kv_cache: KVQuantSpec = field(default_factory=KVQuantSpec)
@@ -387,7 +387,7 @@ class CompressionRecipe:
     def from_dict(cls, data: dict[str, Any]) -> CompressionRecipe:
         calib = data.get("calibration", {})
         return cls(
-            model=str(data.get("model", data.get("source_model", "qwen2.5-0.5b"))),
+            model=str(data.get("model", data.get("source_model", "llama2-7b"))),
             weight=WeightQuantSpec.from_dict(data["weight"]),
             activation=ActivationQuantSpec.from_dict(data["activation"]),
             kv_cache=KVQuantSpec.from_dict(data["kv_cache"]),

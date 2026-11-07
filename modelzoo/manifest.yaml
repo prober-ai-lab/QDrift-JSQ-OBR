@@ -1,11 +1,26 @@
 models:
-  qwen2.5-0.5b:
-    hf_id: Qwen/Qwen2.5-0.5B
-    revision: main
-    local_path: modelzoo/qwen2.5-0.5b
-    dtype: float16
   llama2-7b:
     hf_id: meta-llama/Llama-2-7b-hf
     revision: main
     local_path: modelzoo/llama2-7b
+    dtype: float16
+  llama2-13b:
+    hf_id: meta-llama/Llama-2-13b-hf
+    revision: main
+    local_path: modelzoo/llama2-13b
+    dtype: float16
+  llama2-70b:
+    hf_id: meta-llama/Llama-2-70b-hf
+    revision: main
+    local_path: modelzoo/llama2-70b
+    dtype: float16
+  llama3-8b:
+    hf_id: meta-llama/Meta-Llama-3-8B
+    revision: main
+    local_path: modelzoo/llama3-8b
+    dtype: float16
+  llama3-70b:
+    hf_id: meta-llama/Meta-Llama-3-70B
+    revision: main
+    local_path: modelzoo/llama3-70b
     dtype: float16

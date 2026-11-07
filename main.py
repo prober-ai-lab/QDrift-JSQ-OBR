@@ -47,7 +47,7 @@ def _granularity(kind: str, group_size: int) -> GranularitySpec:
 
 def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     # fmt: off
-    parser.add_argument("--model", default="qwen2.5-0.5b")
+    parser.add_argument("--model", default="llama2-7b")
     parser.add_argument("--w-bits", "--bits", dest="w_bits", type=int, default=4)
     parser.add_argument("--a-bits", type=int, default=4)
     parser.add_argument("--kv-bits", type=int, default=4)

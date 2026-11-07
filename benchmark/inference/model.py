@@ -1,6 +1,6 @@
 # Copyright (c) 2026 QDrift Authors. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Minimal Mistral/Qwen2 runtime with swappable sparse/quantized linears.
+"""Minimal Llama-style runtime with swappable sparse/quantized linears.
 
 The runtime is intentionally small: it exposes exactly the pieces needed to
 separate prefill and decode and to replace every projection with a benchmark

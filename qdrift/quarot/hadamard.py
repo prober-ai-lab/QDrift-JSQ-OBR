@@ -30,9 +30,8 @@ def _sylvester(size: int, device: torch.device | str) -> torch.Tensor:
 def _fallback_hadamard(size: int, device: torch.device | str) -> torch.Tensor:
     """Kronecker(random orthogonal odd factor, Sylvester power-of-two factor).
 
-    QuaRot's fast transform only supports a fixed list of odd factors.  Qwen2.5
-    uses 4864 = 19 * 256 for the MLP down projection, so fall back to a dense
-    orthogonal matrix for that size.  The matrix is deterministic and cached.
+    QuaRot's fast transform only supports a fixed list of odd factors, so
+    fall back to a dense orthogonal matrix for any other size.  The matrix is deterministic and cached.
     """
     key = (size, str(device))
     cached = _FALLBACK_CACHE.get(key)
@@ -196,8 +195,8 @@ def apply_exact_had_to_linear(
     module.weight.data = work.to(device=device, dtype=dtype)
 
     if output and module.bias is not None:
-        # Output-side Hadamard must also rotate the bias.  Qwen2.5 uses
-        # attention bias even though Llama-2 does not.
+        # Output-side Hadamard must also rotate the bias (Llama-2 itself has
+        # no projection biases).
         bias = module.bias.data.float().reshape(1, -1)
         if had_dim != -1:
             bias = bias.reshape(-1, had_dim)
