@@ -64,64 +64,64 @@ def absmax_figure(rows: list[dict], model: str) -> None:
 
 
 def exchange_figure(rows: list[dict], model: str, gran: str = "g128") -> None:
-    """Plot the better-pruned-than-quantized statistics."""
+    """Plot the better-pruned-than-quantized statistics.
+
+    Mid-tread never has eps^2 > w^2: its error is at most s/2, and a weight
+    rounded to 0 has eps^2 == w^2, i.e. the quantizer prunes it itself.  The
+    mid-tread bar therefore shows that rounded-to-zero share (hatched).
+    """
     rows = [r for r in rows if r["gran"] == gran]
     bits = sorted({r["bits"] for r in rows})
-    grids = [g for g in ("midrise", "midtread") if any(r["grid"] == g for r in rows)]
     share_keys = sorted(
         (k for k in rows[0] if k.startswith("loss_share_kept_s")),
         key=lambda k: float(k.rsplit("s", 1)[1]),
     )
-    fig, axes = S.plt.subplots(1, 1 + len(grids), figsize=(2.6 * (1 + len(grids)), 2.3))
-    width = 0.8 / len(grids)
+    bars = (
+        ("midrise", "better_pruned_all", r"mid-rise: $\epsilon^2>w^2$", None),
+        ("midtread", "rounded_to_zero", "mid-tread: rounded to 0", "////"),
+    )
+    fig, axes = S.plt.subplots(1, 2, figsize=(5.6, 2.3))
     ax = axes[0]
-    for k, grid in enumerate(grids):
-        means = []
-        for b in bits:
-            values = [
-                r["better_pruned_all"]
-                for r in rows
-                if (r["grid"], r["bits"]) == (grid, b)
-            ]
-            means.append(100 * np.mean(values) if values else np.nan)
-        xs = np.arange(len(bits)) + (k - (len(grids) - 1) / 2) * width
+    width = 0.4
+    for k, (grid, key, label, hatch) in enumerate(bars):
+        xs, means = [], []
+        for x, b in enumerate(bits):
+            values = [r[key] for r in rows if (r["grid"], r["bits"]) == (grid, b)]
+            if values:
+                xs.append(x + (k - 0.5) * width)
+                means.append(100 * np.mean(values))
         ax.bar(
             xs,
             means,
             width=width * 0.92,
-            color=S.GRID_COLOR[grid],
-            label=S.GRID_LABEL[grid],
+            color="white" if hatch else S.GRID_COLOR[grid],
+            edgecolor=S.GRID_COLOR[grid],
+            hatch=hatch,
+            linewidth=0.8,
+            label=label,
         )
         for x, m in zip(xs, means):
-            if not np.isnan(m):
-                ax.text(
-                    x,
-                    m,
-                    f"{m:.0f}",
-                    ha="center",
-                    va="bottom",
-                    fontsize=6,
-                    color=S.INK_2,
-                )
-    ax.set_xticks(range(len(bits)), [f"W{b}" for b in bits])
-    ax.set_ylabel(r"weights with $\epsilon^2>w^2$ (%)")
-    ax.legend(loc="upper right")
-    S.panel_label(ax, f"all weights, {gran}")
-    for ax, grid in zip(axes[1:], grids):
-        for color, key in zip(S.BLUE_RAMP[1:], share_keys):
-            xs, ys = [], []
-            for b in bits:
-                values = [r[key] for r in rows if (r["grid"], r["bits"]) == (grid, b)]
-                if values:
-                    xs.append(b)
-                    ys.append(100 * np.mean(values))
-            ax.plot(
-                xs, ys, color=color, marker="o", label=f"s = {key.rsplit('s', 1)[1]}"
+            ax.text(
+                x, m, f"{m:.0f}", ha="center", va="bottom", fontsize=6, color=S.INK_2
             )
-        ax.set_xticks(bits, [f"W{b}" for b in bits])
-        ax.set_ylabel("share of retained quant. loss (%)")
-        S.panel_label(ax, f"kept by WANDA, {S.GRID_LABEL[grid]}")
-    axes[-1].legend(loc="upper right")
+    ax.set_xticks(range(len(bits)), [f"W{b}" for b in bits])
+    ax.set_ylabel("weights (%)")
+    ax.set_ylim(0, 118)  # headroom for the legend above the bars
+    ax.legend(loc="upper right")
+    S.panel_label(ax, f"cheaper to prune than to quantize, {gran}")
+    ax = axes[1]
+    for color, key in zip(S.BLUE_RAMP[1:], share_keys):
+        xs, ys = [], []
+        for b in bits:
+            values = [r[key] for r in rows if (r["grid"], r["bits"]) == ("midrise", b)]
+            if values:
+                xs.append(b)
+                ys.append(100 * np.mean(values))
+        ax.plot(xs, ys, color=color, marker="o", label=f"s = {key.rsplit('s', 1)[1]}")
+    ax.set_xticks(bits, [f"W{b}" for b in bits])
+    ax.set_ylabel("share of retained quant. loss (%)")
+    S.panel_label(ax, r"from WANDA-kept weights with $\epsilon^2>w^2$ (mid-rise)")
+    ax.legend(loc="upper right")
     fig.tight_layout()
     S.save(fig, S.figure_name(STEM, model, f"better-pruned-than-quantized-{gran}"))
 
@@ -167,7 +167,7 @@ def overlap_figure(rows: list[dict], model: str, grid: str = "midrise") -> None:
     for ax in axes:
         ax.set_xlabel(r"Q-WANDA $\lambda$")
     S.panel_label(axes[0], f"mask overlap, s = {sparsity:g}, {S.GRID_LABEL[grid]}")
-    S.panel_label(axes[1], r"$\sum_P w^2x^2+\sum_R\epsilon^2x^2$ (geo. mean)")
+    S.panel_label(axes[1], "joint-loss proxy (geo. mean)")
     axes[0].legend(loc="lower right")
     fig.tight_layout()
     S.save(fig, S.figure_name(STEM, model, f"qwanda-mask-shift-vs-lambda-{grid}"))

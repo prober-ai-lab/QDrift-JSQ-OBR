@@ -86,7 +86,7 @@ def heatmap(records: list[dict], model: str) -> None:
     limit = max(abs(min(means)), abs(max(means)), 1e-6)
     norm = SymLogNorm(linthresh=1e-3, vmin=-limit, vmax=limit, base=10)
     fig, axes = S.plt.subplots(
-        1, len(keys), figsize=(2.55 * len(keys) + 0.6, 2.3), squeeze=False, sharey=True
+        1, len(keys), figsize=(3.2 * len(keys) + 0.6, 2.4), squeeze=False, sharey=True
     )
     image = None
     for ax, (comp, grid) in zip(axes[0], keys):
@@ -112,10 +112,10 @@ def heatmap(records: list[dict], model: str) -> None:
                 ax.text(
                     j,
                     i,
-                    f"{share[i, j] * 100:.0f}%",
+                    f"{share[i, j] * 100:.0f}",
                     ha="center",
                     va="center",
-                    fontsize=5.5,
+                    fontsize=5,
                     color="white" if dark else S.INK_2,
                 )
         ax.set_xticks(range(len(sparsities)), [f"{s:g}" for s in sparsities])
@@ -129,7 +129,7 @@ def heatmap(records: list[dict], model: str) -> None:
     bar.outline.set_visible(False)
     fig.suptitle(
         r"$\Delta=\Delta\mathrm{NLL}_{joint}-\Delta\mathrm{NLL}_{quant}-\Delta\mathrm{NLL}_{prune}$"
-        "  (cell text: share of layers with $\\Delta\\leq 0$)",
+        "  (cell: % of layers with $\\Delta\\leq 0$)",
         fontsize=8,
         x=0.02,
         ha="left",
