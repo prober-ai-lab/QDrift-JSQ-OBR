@@ -30,6 +30,30 @@ def qwanda_score(
     return coefficient * scaler_row.clamp_min(0).reshape(1, -1)
 
 
+def hessian_inverse_diag(system: torch.Tensor) -> torch.Tensor:
+    """Return ``diag(H^-1)`` of the damped, symmetric layer Hessian."""
+    factor, info = torch.linalg.cholesky_ex(system)
+    if bool(info):
+        return torch.diagonal(torch.linalg.inv(system))
+    return torch.diagonal(torch.cholesky_inverse(factor))
+
+
+def qap_score(
+    weight: torch.Tensor,
+    hessian_inv_diag: torch.Tensor,
+    step: torch.Tensor,
+) -> torch.Tensor:
+    """Return the quantization-aware pruning (QAP) score.
+
+    ``S_ij = (w_ij^2 - step_ij^2 / 12) / [H^-1]_jj``: the OBS loss of pruning
+    ``w_ij`` minus the OBS loss of the rounding error it incurs if retained,
+    taken in expectation (``E[eps^2] = step^2 / 12``) because compensation
+    changes the value that is finally rounded.  Larger means keep; the score
+    may be negative, which ranks a weight as cheaper to prune than to quantize.
+    """
+    return (weight.pow(2) - step.pow(2) / 12.0) / hessian_inv_diag.reshape(1, -1)
+
+
 def magnitude_score(weight: torch.Tensor) -> torch.Tensor:
     """Return the magnitude score."""
     return weight.abs()

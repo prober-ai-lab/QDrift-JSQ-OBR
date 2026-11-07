@@ -251,7 +251,7 @@ class PruneSpec:
             )
         if self.structure == "none" and self.sparsity != 0.0:
             raise ValueError("no pruning requires sparsity 0.0")
-        if self.criterion not in ("wanda", "qwanda", "magnitude", "random"):
+        if self.criterion not in ("wanda", "qwanda", "qap", "magnitude", "random"):
             raise ValueError(f"unknown criterion {self.criterion}")
         if not 0.0 <= self.lam <= 1.0:
             raise ValueError("lambda must be in [0, 1]")

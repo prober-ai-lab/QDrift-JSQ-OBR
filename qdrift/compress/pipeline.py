@@ -53,7 +53,9 @@ from qdrift.obr.obr import (
     split_mask,
 )
 from qdrift.prune.criteria import (
+    hessian_inverse_diag,
     magnitude_score,
+    qap_score,
     qwanda_score,
     random_score,
     wanda_score,
@@ -130,11 +132,17 @@ def _score(
     diag: torch.Tensor,
     eps: torch.Tensor,
     lam: float,
+    step: torch.Tensor | None = None,
+    hessian_system: torch.Tensor | None = None,
 ) -> torch.Tensor:
     if criterion == "wanda":
         return wanda_score(weight, diag)
     if criterion == "qwanda":
         return qwanda_score(weight, diag, eps, lam)
+    if criterion == "qap":
+        if step is None or hessian_system is None:
+            raise ValueError("QAP needs the quantization step and the layer Hessian")
+        return qap_score(weight, hessian_inverse_diag(hessian_system), step)
     if criterion == "magnitude":
         return magnitude_score(weight)
     if criterion == "random":
@@ -263,6 +271,8 @@ def _quantize_layer(
         diag,
         quant_error,
         recipe.prune.lam,
+        step=full_scale.scale,
+        hessian_system=hessian_system,
     )
     base_structure = recipe.prune.structure
     structure = base_structure
@@ -278,8 +288,10 @@ def _quantize_layer(
         else:
             dense_mask = mask_from_score(score, recipe.prune.sparsity, base_structure)
             pair_mask = mask_from_score(score, recipe.prune.sparsity, pair_structure)
-            dense_loss = score.masked_fill(dense_mask, 0).sum()
-            pair_loss = score.masked_fill(pair_mask, 0).sum()
+            # QAP scores may be negative; the loss ratio needs a non-negative one.
+            loss = score.clamp_min(0)
+            dense_loss = loss.masked_fill(dense_mask, 0).sum()
+            pair_loss = loss.masked_fill(pair_mask, 0).sum()
             pairwise_ratio = float(pair_loss / dense_loss.clamp_min(1e-12))
             structure = (
                 pair_structure
@@ -735,7 +747,7 @@ def compress(
         and 0.0 < recipe.pairwise_fraction < 1.0
     )
     need_hessian = (
-        recipe.prune.criterion in ("wanda", "qwanda")
+        recipe.prune.criterion in ("wanda", "qwanda", "qap")
         or recipe.compensation.method != "none"
         or recipe.weight.method == "gptq"
         or needs_pairwise_selection
