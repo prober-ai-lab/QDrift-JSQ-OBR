@@ -23,7 +23,7 @@ Because a single layer of block ``l`` changes, the dense hidden state at the
 input of block ``l`` is cached once and each evaluation only replays blocks
 ``l..L-1``.
 
-    python minitests/single_layer_prune_quant_error_interaction.py \
+    python minitests/prune_quant_interaction.py \
         --blocks 0,10,20,31 --sparsities 0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9 \
         --bits 1,2,3,4
 """
@@ -34,12 +34,12 @@ import argparse
 import time
 from pathlib import Path
 
-import _common as C
+import common as C
 import torch
 
 from qdrift.prune.mask import mask_from_score
 
-STEM = "single_layer_prune_quant_error_interaction"
+STEM = "prune_quant_interaction"
 
 
 def parse_args() -> argparse.Namespace:

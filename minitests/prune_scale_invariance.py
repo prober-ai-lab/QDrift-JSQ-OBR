@@ -21,7 +21,7 @@ dense-path input norms ``||x_j||^2`` for WANDA / Q-WANDA:
     How far Q-WANDA moves the mask away from WANDA as lambda decreases, and the
     diagonal proxy of the joint loss ``sum_P w^2 x^2 + sum_R eps^2 x^2``.
 
-    python minitests/pruning_preserves_group_absmax_scale.py
+    python minitests/prune_scale_invariance.py
 """
 
 from __future__ import annotations
@@ -30,12 +30,12 @@ import argparse
 import time
 from pathlib import Path
 
-import _common as C
+import common as C
 import torch
 
 from qdrift.prune.mask import mask_from_score
 
-STEM = "pruning_preserves_group_absmax_scale"
+STEM = "prune_scale_invariance"
 
 
 def parse_args() -> argparse.Namespace:

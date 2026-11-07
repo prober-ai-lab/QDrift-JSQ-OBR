@@ -16,17 +16,17 @@
     Overlap of the Q-WANDA pruned set with WANDA's, and the diagonal joint-loss
     proxy relative to WANDA (lambda = 1), against lambda.
 
-    python visualize/plots/pruning_preserves_group_absmax_scale.py
+    python visualize/plots/prune_scale_invariance.py
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 
-import _style as S
 import numpy as np
+import style as S
 
-STEM = "pruning_preserves_group_absmax_scale"
+STEM = "prune_scale_invariance"
 GRAN_ORDER = ("g64", "g128", "ch")
 GRAN_LABEL = {"g64": "group 64", "g128": "group 128", "ch": "per channel"}
 

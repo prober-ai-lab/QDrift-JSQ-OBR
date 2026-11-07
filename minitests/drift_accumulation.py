@@ -21,7 +21,7 @@ dual-path moments E[x_hat x_hat^T], E[dx x_hat^T], E[dx dx^T], so no token
 matrix product is needed.  The end-to-end WikiText-2 NLL of each compressed
 model is recorded too.
 
-    python minitests/drift_accumulation_obr_vs_driftobr.py --comps none,obr,drift
+    python minitests/drift_accumulation.py --comps none,obr,drift
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import math
 import time
 from pathlib import Path
 
-import _common as C
+import common as C
 import torch
 
 from qdrift.compress.pipeline import _quantize_layer
@@ -46,7 +46,7 @@ from qdrift.compress.recipe import (
 from qdrift.obr.drift import drift_weight
 from qdrift.quant.quantize import qrange
 
-STEM = "drift_accumulation_obr_vs_driftobr"
+STEM = "drift_accumulation"
 # Capture groups in block order: later groups read the compressed earlier ones.
 GROUPS = (
     ("q", ("q", "k", "v")),

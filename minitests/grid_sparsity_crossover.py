@@ -17,7 +17,7 @@ The selected clip ratio rho* of every quantization group is histogrammed as
 well, since range clipping is what lets 2^b mid-rise levels track the body of
 the distribution.
 
-    python minitests/midrise_vs_midtread_sparsity_crossover.py
+    python minitests/grid_sparsity_crossover.py
 """
 
 from __future__ import annotations
@@ -26,13 +26,13 @@ import argparse
 import time
 from pathlib import Path
 
-import _common as C
+import common as C
 import torch
 
 from qdrift.compress.recipe import DEFAULT_CLIP_RHOS
 from qdrift.prune.mask import mask_from_score
 
-STEM = "midrise_vs_midtread_sparsity_crossover"
+STEM = "grid_sparsity_crossover"
 
 
 def parse_args() -> argparse.Namespace:

@@ -16,18 +16,18 @@
 ``delta-by-layer-type``
     Delta at a fixed bit width for each layer type, against sparsity.
 
-    python visualize/plots/single_layer_prune_quant_error_interaction.py
+    python visualize/plots/prune_quant_interaction.py
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 
-import _style as S
 import numpy as np
+import style as S
 from matplotlib.colors import SymLogNorm
 
-STEM = "single_layer_prune_quant_error_interaction"
+STEM = "prune_quant_interaction"
 KEYS = ("layer", "comp", "variant", "grid", "bits", "sparsity")
 
 

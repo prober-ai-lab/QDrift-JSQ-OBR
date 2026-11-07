@@ -16,7 +16,7 @@
     layer type (OBR run), and the share actually removed by each mode,
     1 - total / (injected + inherited).
 
-    python visualize/plots/drift_accumulation_obr_vs_driftobr.py
+    python visualize/plots/drift_accumulation.py
 """
 
 from __future__ import annotations
@@ -24,11 +24,11 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 
-import _style as S
 import numpy as np
+import style as S
 from matplotlib.ticker import MaxNLocator
 
-STEM = "drift_accumulation_obr_vs_driftobr"
+STEM = "drift_accumulation"
 KEYS = ("comp", "layer")
 
 

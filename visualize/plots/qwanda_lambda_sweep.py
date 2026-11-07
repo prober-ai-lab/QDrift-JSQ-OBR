@@ -10,17 +10,17 @@
 ``best-lambda``
     Per-layer best lambda for each bit width, as a dot strip with the median.
 
-    python visualize/plots/qwanda_lambda_layer_error_sweep.py
+    python visualize/plots/qwanda_lambda_sweep.py
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 
-import _style as S
 import numpy as np
+import style as S
 
-STEM = "qwanda_lambda_layer_error_sweep"
+STEM = "qwanda_lambda_sweep"
 KEYS = ("layer", "grid", "bits", "sparsity", "lambda", "comp")
 
 

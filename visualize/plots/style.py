@@ -5,7 +5,7 @@
 Every figure is written twice under one name: ``figs/<name>.png`` and
 ``figs/pdf/<name>.pdf``.  Names are flat and descriptive,
 ``<origin>__<producer>__<model>__<content>``, e.g.
-``minitest__single_layer_prune_quant_error_interaction__llama2-7b__delta-nll-heatmap``.
+``minitest__prune_quant_interaction__llama2-7b__delta-nll-heatmap``.
 """
 
 from __future__ import annotations

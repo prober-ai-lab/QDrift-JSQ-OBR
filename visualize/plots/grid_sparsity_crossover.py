@@ -11,16 +11,16 @@
 ``clip-ratio-distribution``
     Share of quantization groups that select each clip ratio rho*.
 
-    python visualize/plots/midrise_vs_midtread_sparsity_crossover.py
+    python visualize/plots/grid_sparsity_crossover.py
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 
-import _style as S
+import style as S
 
-STEM = "midrise_vs_midtread_sparsity_crossover"
+STEM = "grid_sparsity_crossover"
 METRICS = (
     ("quant_err", "retained weights only"),
     ("joint_err", "joint, no compensation"),

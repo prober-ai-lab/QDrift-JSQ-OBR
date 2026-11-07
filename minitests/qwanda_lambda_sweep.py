@@ -16,7 +16,7 @@ The error decomposes over output rows, so OBR is evaluated on a random subset
 of rows (``--rows``) to keep the per-row solves cheap; both compensation modes
 use the same rows.
 
-    python minitests/qwanda_lambda_layer_error_sweep.py --blocks 1,15,30
+    python minitests/qwanda_lambda_sweep.py --blocks 1,15,30
 """
 
 from __future__ import annotations
@@ -25,12 +25,12 @@ import argparse
 import time
 from pathlib import Path
 
-import _common as C
+import common as C
 import torch
 
 from qdrift.prune.mask import mask_from_score
 
-STEM = "qwanda_lambda_layer_error_sweep"
+STEM = "qwanda_lambda_sweep"
 
 
 def parse_args() -> argparse.Namespace:
