@@ -62,7 +62,7 @@ from qdrift.prune.criteria import (
 from qdrift.prune.mask import mask_from_score
 from qdrift.quant.gptq import gptq_quantize, rtn_quantize
 from qdrift.quant.pack import pack_codes
-from qdrift.quant.quantize import dequantize, qrange
+from qdrift.quant.quantize import dequantize, fake_quantize, qrange
 from qdrift.quant.scale import compute_scale
 
 __all__ = [
@@ -97,9 +97,7 @@ def _hessians_streaming(
     # The mask/system Hessian uses the compressed path when it is available.
     source = compressed_input if compressed_input is not None else fp_input
     hessian = torch.zeros(width, width, device=device, dtype=torch.float32)
-    hessian_diff = (
-        torch.zeros_like(hessian) if compressed_input is not None else None
-    )
+    hessian_diff = torch.zeros_like(hessian) if compressed_input is not None else None
     for start in range(0, total, _HESSIAN_STREAM_ROWS):
         end = min(start + _HESSIAN_STREAM_ROWS, total)
         zhat = source[start:end].to(device=device, dtype=torch.float32)
@@ -129,7 +127,7 @@ def _score(
     criterion: str,
     weight: torch.Tensor,
     diag: torch.Tensor,
-    step: torch.Tensor,
+    error: torch.Tensor | None,
     hessian_system: torch.Tensor | None,
 ) -> torch.Tensor:
     if criterion == "magnitude":
@@ -142,7 +140,7 @@ def _score(
     if criterion == "sparsegpt":
         return sparsegpt_score(weight, hessian_inv_diag)
     if criterion == "qap":
-        return qap_score(weight, hessian_inv_diag, step)
+        return qap_score(weight, hessian_inv_diag, error)
     raise ValueError(f"unknown criterion {criterion}")
 
 
@@ -172,7 +170,8 @@ def _hessians(
     if compressed_input is not None:
         hessian_hat = _hessian_from_inputs(compressed_input)
         hessian_diff = (
-            (compressed_input - fp_input).t() @ compressed_input
+            (compressed_input - fp_input).t()
+            @ compressed_input
             / max(fp_input.shape[0], 1)
         )
         hessian_system = hessian_hat
@@ -252,20 +251,25 @@ def _quantize_layer(
         diag = torch.diagonal(hessian_fp).clamp_min(0)
     else:
         diag = torch.ones(cols, device=weight.device)
-    score = _score(
-        recipe.prune.criterion,
-        weight_rot,
-        diag,
-        full_scale.scale,
-        hessian_system,
-    )
+    # QAP weighs each weight against its rounding error under the layer's
+    # own quantizer.
+    error = None
+    if recipe.prune.criterion == "qap":
+        error = (
+            fake_quantize(weight_rot, full_scale.scale, qparams, recipe.weight.grid)
+            - weight_rot
+        )
+    score = _score(recipe.prune.criterion, weight_rot, diag, error, hessian_system)
+    error = None
     base_structure = recipe.prune.structure
     structure = base_structure
     pairwise_ratio = None
     if base_structure in ("2:4", "4:8"):
         pair_structure = f"{base_structure}_pairwise"
         if name is not None and recipe.pairwise_layers:
-            structure = pair_structure if name in recipe.pairwise_layers else base_structure
+            structure = (
+                pair_structure if name in recipe.pairwise_layers else base_structure
+            )
         elif recipe.pairwise_fraction >= 1.0:
             structure = pair_structure
         elif recipe.pairwise_fraction <= 0.0:
@@ -292,8 +296,7 @@ def _quantize_layer(
         )
     keep, _drop = split_mask(mask)
     full_layout = (
-        recipe.weight.method == "gptq"
-        or recipe.weight.granularity.kind == "group"
+        recipe.weight.method == "gptq" or recipe.weight.granularity.kind == "group"
     )
     if recipe.weight.method == "rtn":
         # OBR computes the quantizer on the rotated, pre-mask W.  Keep that
@@ -780,8 +783,7 @@ def compress(
                 pairwise_layers=tuple(ordered_names[:pair_count]),
             )
             print(
-                f"pairwise fraction: {pair_count}/{count} "
-                f"threshold={threshold:.6g}",
+                f"pairwise fraction: {pair_count}/{count} threshold={threshold:.6g}",
                 flush=True,
             )
             # Re-run calibration from the start; the sensitivity pass only read inputs.
@@ -934,7 +936,12 @@ def compress(
                 )
                 layer_meta[name] = result.meta
                 if mask_dir is not None:
-                    _write_layer_mask(mask_dir, name, result.tensors["weight_mask"], result.meta.get("structure"))
+                    _write_layer_mask(
+                        mask_dir,
+                        name,
+                        result.tensors["weight_mask"],
+                        result.meta.get("structure"),
+                    )
                 value_layout = result.value_layout
                 scale_layout = result.scale_layout
                 code_encoding = result.code_encoding
@@ -970,9 +977,7 @@ def compress(
             else:
                 hessian_fp = hessian_system = hessian_raw = hessian_diff = None
             local_drift_weight = (
-                drift_weight(weight, hessian_diff)
-                if hessian_diff is not None
-                else None
+                drift_weight(weight, hessian_diff) if hessian_diff is not None else None
             )
             rows = weight.shape[0]
             splits = [
@@ -1009,7 +1014,12 @@ def compress(
             )
             layer_meta[name] = result.meta
             if mask_dir is not None:
-                _write_layer_mask(mask_dir, name, result.tensors["weight_mask"], result.meta.get("structure"))
+                _write_layer_mask(
+                    mask_dir,
+                    name,
+                    result.tensors["weight_mask"],
+                    result.meta.get("structure"),
+                )
             value_layout = result.value_layout
             scale_layout = result.scale_layout
             code_encoding = result.code_encoding
@@ -1049,7 +1059,12 @@ def compress(
                 )
                 layer_meta[name] = result.meta
                 if mask_dir is not None:
-                    _write_layer_mask(mask_dir, name, result.tensors["weight_mask"], result.meta.get("structure"))
+                    _write_layer_mask(
+                        mask_dir,
+                        name,
+                        result.tensors["weight_mask"],
+                        result.meta.get("structure"),
+                    )
                 value_layout = result.value_layout
                 scale_layout = result.scale_layout
                 code_encoding = result.code_encoding

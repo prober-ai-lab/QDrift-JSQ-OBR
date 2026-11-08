@@ -38,17 +38,17 @@ def sparsegpt_score(
 def qap_score(
     weight: torch.Tensor,
     hessian_inv_diag: torch.Tensor,
-    step: torch.Tensor,
+    error: torch.Tensor,
 ) -> torch.Tensor:
     """Return the quantization-aware pruning (QAP) score.
 
-    ``S_ij = (w_ij^2 - step_ij^2 / 12) / [H^-1]_jj``: the OBS loss of pruning
-    ``w_ij`` minus the OBS loss of the rounding error it incurs if retained,
-    taken in expectation (``E[eps^2] = step^2 / 12``) because compensation
-    changes the value that is finally rounded.  Larger means keep; the score
-    may be negative, which ranks a weight as cheaper to prune than to quantize.
+    ``S_ij = (w_ij^2 - eps_ij^2) / [H^-1]_jj``: the OBS loss of pruning
+    ``w_ij`` minus the OBS loss of the rounding error ``eps_ij = Q(w_ij) - w_ij``
+    it incurs if retained, with the layer's own quantizer.  Larger means keep;
+    the score may be negative, which ranks a weight as cheaper to prune than to
+    quantize.
     """
-    return (weight.pow(2) - step.pow(2) / 12.0) / hessian_inv_diag.reshape(1, -1)
+    return (weight.pow(2) - error.pow(2)) / hessian_inv_diag.reshape(1, -1)
 
 
 def magnitude_score(weight: torch.Tensor) -> torch.Tensor:

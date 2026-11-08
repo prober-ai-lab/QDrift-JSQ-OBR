@@ -23,7 +23,7 @@ ORDER = ("magnitude", "sparsegpt", "qap")
 LABEL = {
     "magnitude": "magnitude",
     "sparsegpt": r"SparseGPT $w^2/[H^{-1}]_{jj}$",
-    "qap": r"QAP $(w^2-\Delta^2/12)/[H^{-1}]_{jj}$",
+    "qap": r"QAP $(w^2-\epsilon^2)/[H^{-1}]_{jj}$",
 }
 STRUCT_LABEL = {"u0.5": "unstructured 50%", "u0.7": "unstructured 70%", "2to4": "2:4"}
 COLORS = S.SERIES

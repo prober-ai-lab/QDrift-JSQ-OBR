@@ -4,17 +4,13 @@
 
 ``delta-nll-heatmap``
     Mean interaction Delta = dNLL_joint - dNLL_quant - dNLL_prune over the
-    tested layers, per sparsity s and bit width b, one panel per
-    (compensation, grid).  Blue cells: the joint error is smaller than the sum
+    tested layers, per sparsity s and bit width b (mid-rise grid), one panel
+    per compensation.  Blue cells: the joint error is smaller than the sum
     of the individual errors, i.e. pruning absorbs quantization error.  Each
     cell also shows the share of layers with Delta <= 0.
 
-``absorbed-share``
-    -Delta / dNLL_quant: the share of the quant-only NLL increase that pruning
-    absorbs, median over layers with the inter-quartile band.
-
-``delta-by-layer-type``
-    Delta at a fixed bit width for each layer type, against sparsity.
+``delta-by-layer-type-w2``
+    Delta at 2 bits for each layer type, against sparsity.
 
     python visualize/plots/prune_quant_interaction.py
 """
@@ -29,6 +25,7 @@ from matplotlib.colors import SymLogNorm
 
 STEM = "prune_quant_interaction"
 KEYS = ("layer", "comp", "variant", "grid", "bits", "sparsity")
+GRID = "midrise"
 
 
 def interactions(rows: list[dict]) -> list[dict]:
@@ -62,16 +59,10 @@ def interactions(rows: list[dict]) -> list[dict]:
     return out
 
 
-def panels(records: list[dict]) -> list[tuple[str, str]]:
-    """(compensation, grid) panels present, in a fixed order."""
-    present = {(r["comp"], r["grid"]) for r in records}
-    order = [
-        ("none", "midrise"),
-        ("obr", "midrise"),
-        ("none", "midtread"),
-        ("obr", "midtread"),
-    ]
-    return [key for key in order if key in present]
+def panels(records: list[dict]) -> list[str]:
+    """Compensation panels present, in a fixed order."""
+    present = {r["comp"] for r in records}
+    return [comp for comp in ("none", "obr") if comp in present]
 
 
 def heatmap(records: list[dict], model: str) -> None:
@@ -81,7 +72,7 @@ def heatmap(records: list[dict], model: str) -> None:
     bits = sorted({r["bits"] for r in records})
     cells = defaultdict(list)
     for r in records:
-        cells[(r["comp"], r["grid"], r["bits"], r["sparsity"])].append(r["delta"])
+        cells[(r["comp"], r["bits"], r["sparsity"])].append(r["delta"])
     means = [np.mean(v) for v in cells.values()]
     limit = max(abs(min(means)), abs(max(means)), 1e-6)
     norm = SymLogNorm(linthresh=1e-3, vmin=-limit, vmax=limit, base=10)
@@ -89,12 +80,12 @@ def heatmap(records: list[dict], model: str) -> None:
         1, len(keys), figsize=(3.2 * len(keys) + 0.6, 2.4), squeeze=False, sharey=True
     )
     image = None
-    for ax, (comp, grid) in zip(axes[0], keys):
+    for ax, comp in zip(axes[0], keys):
         grid_values = np.full((len(bits), len(sparsities)), np.nan)
         share = np.full_like(grid_values, np.nan)
         for i, b in enumerate(bits):
             for j, s in enumerate(sparsities):
-                values = cells.get((comp, grid, b, s))
+                values = cells.get((comp, b, s))
                 if values:
                     grid_values[i, j] = np.mean(values)
                     share[i, j] = np.mean(np.asarray(values) <= 0)
@@ -122,7 +113,7 @@ def heatmap(records: list[dict], model: str) -> None:
         ax.set_yticks(range(len(bits)), [str(b) for b in bits])
         ax.set_xlabel("sparsity $s$")
         ax.grid(False)
-        S.panel_label(ax, f"{S.COMP_LABEL[comp]}, {S.GRID_LABEL[grid]}")
+        S.panel_label(ax, S.COMP_LABEL[comp])
     axes[0][0].set_ylabel("weight bits $b$")
     bar = fig.colorbar(image, ax=axes[0].tolist(), fraction=0.025, pad=0.02)
     bar.set_label(r"mean $\Delta$ (nats)")
@@ -138,56 +129,19 @@ def heatmap(records: list[dict], model: str) -> None:
     S.save(fig, S.figure_name(STEM, model, "delta-nll-heatmap"))
 
 
-def absorbed_share(records: list[dict], model: str) -> None:
-    """Plot the absorbed share of the quant-only NLL increase."""
-    keys = panels(records)
-    bits = sorted({r["bits"] for r in records})
-    fig, axes = S.plt.subplots(
-        1, len(keys), figsize=(2.5 * len(keys), 2.2), squeeze=False, sharey=True
-    )
-    for ax, (comp, grid) in zip(axes[0], keys):
-        for b in bits:
-            by_s = defaultdict(list)
-            for r in records:
-                if (r["comp"], r["grid"], r["bits"]) == (comp, grid, b) and r[
-                    "quant"
-                ] > 0:
-                    by_s[r["sparsity"]].append(-r["delta"] / r["quant"])
-            if not by_s:
-                continue
-            xs = sorted(by_s)
-            q25, q50, q75 = (
-                np.array([np.percentile(by_s[s], p) for s in xs]) for p in (25, 50, 75)
-            )
-            color = S.bit_color(b, bits)
-            ax.fill_between(xs, q25, q75, color=color, alpha=0.18, linewidth=0)
-            ax.plot(xs, q50, color=color, marker="o", label=f"W{b}")
-        ax.axhline(0, color=S.AXIS, linewidth=0.8)
-        ax.set_xlabel("sparsity $s$")
-        S.panel_label(ax, f"{S.COMP_LABEL[comp]}, {S.GRID_LABEL[grid]}")
-    axes[0][0].set_ylabel(r"absorbed share $-\Delta/\Delta\mathrm{NLL}_{quant}$")
-    axes[0][-1].legend(loc="upper left", bbox_to_anchor=(1.0, 1.0))
-    S.save(fig, S.figure_name(STEM, model, "absorbed-share-vs-sparsity"))
-
-
 def by_layer_type(records: list[dict], model: str, bits: int = 2) -> None:
     """Plot the interaction per layer type at one bit width."""
-    keys = [key for key in panels(records) if key[1] == "midrise"] or panels(records)
+    keys = panels(records)
     types = [t for t in S.TYPE_ORDER if any(r["type"] == t for r in records)]
     fig, axes = S.plt.subplots(
         1, len(keys), figsize=(2.6 * len(keys), 2.2), squeeze=False, sharey=True
     )
     palette = S.SERIES + ("#6250d6",)
-    for ax, (comp, grid) in zip(axes[0], keys):
+    for ax, comp in zip(axes[0], keys):
         for color, layer_type in zip(palette, types):
             by_s = defaultdict(list)
             for r in records:
-                if (r["comp"], r["grid"], r["bits"], r["type"]) == (
-                    comp,
-                    grid,
-                    bits,
-                    layer_type,
-                ):
+                if (r["comp"], r["bits"], r["type"]) == (comp, bits, layer_type):
                     by_s[r["sparsity"]].append(r["delta"])
             if by_s:
                 xs = sorted(by_s)
@@ -201,7 +155,7 @@ def by_layer_type(records: list[dict], model: str, bits: int = 2) -> None:
         ax.axhline(0, color=S.AXIS, linewidth=0.8)
         ax.set_yscale("symlog", linthresh=1e-3)
         ax.set_xlabel("sparsity $s$")
-        S.panel_label(ax, f"W{bits}, {S.COMP_LABEL[comp]}, {S.GRID_LABEL[grid]}")
+        S.panel_label(ax, f"W{bits}, {S.COMP_LABEL[comp]}")
     axes[0][0].set_ylabel(r"mean $\Delta$ (nats)")
     axes[0][-1].legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), title="layer")
     S.save(fig, S.figure_name(STEM, model, f"delta-by-layer-type-w{bits}"))
@@ -212,13 +166,11 @@ def main() -> None:
     args = S.arguments(__doc__.split("\n\n")[0])
     S.setup()
     rows = S.table(S.load(STEM, args), "rows", KEYS)
-    records = interactions(rows)
+    records = [r for r in interactions(rows) if r["grid"] == GRID]
     if not records:
         raise SystemExit("no joint rows with matching quant/prune rows")
     heatmap(records, args.model)
-    absorbed_share(records, args.model)
-    for bits in sorted({r["bits"] for r in records} & {2, 3}):
-        by_layer_type(records, args.model, bits)
+    by_layer_type(records, args.model, 2)
 
 
 if __name__ == "__main__":

@@ -496,13 +496,13 @@ def score(
     criterion: str,
     weight: torch.Tensor,
     diag: torch.Tensor,
-    step: torch.Tensor | None = None,
+    error: torch.Tensor | None = None,
     hinv: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Pruning score of one criterion (larger means keep).
 
     ``diag`` is ``E[x_j^2]`` (WANDA); SparseGPT and QAP need
-    ``hinv = diag(H^-1)``, and QAP also the quantization ``step``.
+    ``hinv = diag(H^-1)``, and QAP also the rounding ``error`` ``Q(w) - w``.
     """
     if criterion == "magnitude":
         return magnitude_score(weight)
@@ -511,7 +511,7 @@ def score(
     if criterion == "sparsegpt":
         return sparsegpt_score(weight, hinv)
     if criterion == "qap":
-        return qap_score(weight, hinv, step)
+        return qap_score(weight, hinv, error)
     raise ValueError(f"unknown criterion {criterion}")
 
 

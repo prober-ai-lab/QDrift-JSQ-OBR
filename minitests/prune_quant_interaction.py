@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
         default=C.floats("0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9"),
     )
     parser.add_argument("--bits", type=C.ints, default=C.ints("1,2,3,4"))
-    parser.add_argument("--grids", type=C.names, default=["midrise", "midtread"])
+    parser.add_argument("--grids", type=C.names, default=["midrise"])
     parser.add_argument("--comps", type=C.names, default=["none", "obr"])
     parser.add_argument(
         "--obr-grids",

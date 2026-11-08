@@ -7,15 +7,10 @@
     (so that a scale recomputed after pruning would shrink), per criterion and
     group granularity; mean over layers, with the worst layer as a dotted line.
 
-``better-pruned-than-quantized``
+``better-pruned-than-quantized-g128``
     Share of weights with eps^2 > w^2 (cheaper to prune than to quantize) per
-    bit width and grid, and the share of the retained activation-weighted
+    bit width (mid-rise, group 128), and the share of the retained activation-weighted
     quantization loss carried by such weights under a WANDA mask.
-
-``qap-mask-vs-wanda``
-    Share of the QAP pruned set shared with WANDA's, and the share of weights
-    QAP scores negative (expected rounding error above their magnitude), per
-    bit width and grid.
 
     python visualize/plots/prune_scale_invariance.py
 """
@@ -68,102 +63,42 @@ def absmax_figure(rows: list[dict], model: str) -> None:
 
 
 def exchange_figure(rows: list[dict], model: str, gran: str = "g128") -> None:
-    """Plot the better-pruned-than-quantized statistics.
-
-    Mid-tread never has eps^2 > w^2: its error is at most s/2, and a weight
-    rounded to 0 has eps^2 == w^2, i.e. the quantizer prunes it itself.  The
-    mid-tread bar therefore shows that rounded-to-zero share (hatched).
-    """
-    rows = [r for r in rows if r["gran"] == gran]
+    """Plot the better-pruned-than-quantized statistics (mid-rise)."""
+    rows = [r for r in rows if r["gran"] == gran and r["grid"] == "midrise"]
     bits = sorted({r["bits"] for r in rows})
     share_keys = sorted(
         (k for k in rows[0] if k.startswith("loss_share_kept_s")),
         key=lambda k: float(k.rsplit("s", 1)[1]),
     )
-    bars = (
-        ("midrise", "better_pruned_all", r"mid-rise: $\epsilon^2>w^2$", None),
-        ("midtread", "rounded_to_zero", "mid-tread: rounded to 0", "////"),
-    )
     fig, axes = S.plt.subplots(1, 2, figsize=(5.6, 2.3))
     ax = axes[0]
-    width = 0.4
-    for k, (grid, key, label, hatch) in enumerate(bars):
-        xs, means = [], []
-        for x, b in enumerate(bits):
-            values = [r[key] for r in rows if (r["grid"], r["bits"]) == (grid, b)]
-            if values:
-                xs.append(x + (k - 0.5) * width)
-                means.append(100 * np.mean(values))
-        ax.bar(
-            xs,
-            means,
-            width=width * 0.92,
-            color="white" if hatch else S.GRID_COLOR[grid],
-            edgecolor=S.GRID_COLOR[grid],
-            hatch=hatch,
-            linewidth=0.8,
-            label=label,
-        )
-        for x, m in zip(xs, means):
-            ax.text(
-                x, m, f"{m:.0f}", ha="center", va="bottom", fontsize=6, color=S.INK_2
-            )
+    means = [
+        100 * np.mean([r["better_pruned_all"] for r in rows if r["bits"] == b])
+        for b in bits
+    ]
+    ax.bar(range(len(bits)), means, width=0.6, color=S.GRID_COLOR["midrise"])
+    for x, m in enumerate(means):
+        ax.text(x, m, f"{m:.0f}", ha="center", va="bottom", fontsize=6, color=S.INK_2)
     ax.set_xticks(range(len(bits)), [f"W{b}" for b in bits])
     ax.set_ylabel("weights (%)")
-    ax.set_ylim(0, 118)  # headroom for the legend above the bars
-    ax.legend(loc="upper right")
-    S.panel_label(ax, f"cheaper to prune than to quantize, {gran}")
+    ax.set_ylim(0, 100)
+    ax.grid(axis="x", visible=False)
+    S.panel_label(ax, rf"weights with $\epsilon^2>w^2$, {gran}")
     ax = axes[1]
     for color, key in zip(S.BLUE_RAMP[1:], share_keys):
         xs, ys = [], []
         for b in bits:
-            values = [r[key] for r in rows if (r["grid"], r["bits"]) == ("midrise", b)]
+            values = [r[key] for r in rows if r["bits"] == b]
             if values:
                 xs.append(b)
                 ys.append(100 * np.mean(values))
         ax.plot(xs, ys, color=color, marker="o", label=f"s = {key.rsplit('s', 1)[1]}")
     ax.set_xticks(bits, [f"W{b}" for b in bits])
     ax.set_ylabel("share of retained quant. loss (%)")
-    S.panel_label(ax, r"from WANDA-kept weights with $\epsilon^2>w^2$ (mid-rise)")
+    S.panel_label(ax, r"from WANDA-kept weights with $\epsilon^2>w^2$")
     ax.legend(loc="upper right")
     fig.tight_layout()
     S.save(fig, S.figure_name(STEM, model, f"better-pruned-than-quantized-{gran}"))
-
-
-def overlap_figure(rows: list[dict], model: str) -> None:
-    """Plot how far QAP moves the mask from WANDA at each bit width."""
-    grids = [g for g in ("midrise", "midtread") if any(r["grid"] == g for r in rows)]
-    bits = sorted({r["bits"] for r in rows})
-    sparsity = rows[0]["sparsity"]
-    fig, axes = S.plt.subplots(1, 2, figsize=(5.6, 2.2))
-    width = 0.8 / len(grids)
-    panels = (
-        ("pruned_shared_with_wanda", f"pruned set shared with WANDA, s = {sparsity:g}"),
-        ("qap_negative", r"weights with $w^2<\Delta^2/12$"),
-    )
-    for ax, (key, title) in zip(axes, panels):
-        for k, grid in enumerate(grids):
-            xs, ys = [], []
-            for x, b in enumerate(bits):
-                values = [r[key] for r in rows if (r["grid"], r["bits"]) == (grid, b)]
-                if values:
-                    xs.append(x + (k - (len(grids) - 1) / 2) * width)
-                    ys.append(100 * np.mean(values))
-            ax.bar(
-                xs,
-                ys,
-                width=width * 0.92,
-                color=S.GRID_COLOR[grid],
-                label=S.GRID_LABEL[grid],
-            )
-        ax.set_xticks(range(len(bits)), [f"W{b}" for b in bits])
-        ax.set_ylabel("%")
-        ax.grid(axis="x", visible=False)
-        S.panel_label(ax, title)
-    axes[0].set_ylim(0, 100)
-    axes[1].legend(loc="upper right")
-    fig.tight_layout()
-    S.save(fig, S.figure_name(STEM, model, "qap-mask-vs-wanda"))
 
 
 def main() -> None:
@@ -173,12 +108,8 @@ def main() -> None:
     payloads = S.load(STEM, args)
     absmax = S.table(payloads, "absmax", ("layer", "gran", "criterion", "sparsity"))
     exchange = S.table(payloads, "exchange", ("layer", "gran", "grid", "bits"))
-    overlap = S.table(payloads, "overlap", ("layer", "gran", "grid", "bits"))
     absmax_figure(absmax, args.model)
-    for gran in sorted({r["gran"] for r in exchange}):
-        exchange_figure(exchange, args.model, gran)
-    if overlap:
-        overlap_figure(overlap, args.model)
+    exchange_figure(exchange, args.model, "g128")
 
 
 if __name__ == "__main__":

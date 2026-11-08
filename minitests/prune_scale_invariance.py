@@ -20,7 +20,7 @@ dense-path input norms ``||x_j||^2`` for WANDA and ``diag(H^-1)`` for QAP:
 ``overlap``
     How far QAP moves the mask away from WANDA at each bit width, and the
     share of weights QAP scores negative (cheaper to prune than to quantize
-    in expectation, ``w^2 < step^2 / 12``).
+    under its own quantizer, ``w^2 < eps^2``).
 
     python minitests/prune_scale_invariance.py
 """
@@ -58,7 +58,7 @@ def parse_args() -> argparse.Namespace:
         default=C.floats("0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9"),
     )
     parser.add_argument("--bits", type=C.ints, default=C.ints("1,2,3,4"))
-    parser.add_argument("--grids", type=C.names, default=["midrise", "midtread"])
+    parser.add_argument("--grids", type=C.names, default=["midrise"])
     parser.add_argument(
         "--qap-bits",
         type=int,
@@ -114,7 +114,13 @@ def absmax_rows(
         "wanda": C.score("wanda", weight, diag),
         "magnitude": C.score("magnitude", weight, diag),
         "sparsegpt": C.score("sparsegpt", weight, diag, hinv=hinv),
-        "qap": C.score("qap", weight, diag, step=step, hinv=hinv),
+        "qap": C.score(
+            "qap",
+            weight,
+            diag,
+            error=C.quant_error(weight, step, args.qap_bits, "midrise"),
+            hinv=hinv,
+        ),
     }
     for criterion, crit in criteria.items():
         for sparsity in args.sparsities:
@@ -181,7 +187,8 @@ def overlap_row(
 ) -> dict:
     """QAP mask overlap with WANDA and the share of negative QAP scores."""
     group_size, grid, bits = key
-    crit = C.score("qap", weight, hinv, step=step, hinv=hinv)
+    error = C.quant_error(weight, step, bits, grid)
+    crit = C.score("qap", weight, hinv, error=error, hinv=hinv)
     pruned = ~mask_from_score(crit, args.overlap_sparsity, "unstructured")
     return {
         **head,

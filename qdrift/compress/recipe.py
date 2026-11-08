@@ -395,7 +395,9 @@ class CompressionRecipe:
             batch_size=int(calib.get("batch_size", 16)),
             max_layers=int(data.get("max_layers", 0)),
             pairwise_fraction=float(data.get("pairwise_fraction", 0.4)),
-            pairwise_layers=tuple(str(name) for name in data.get("pairwise_layers", ())),
+            pairwise_layers=tuple(
+                str(name) for name in data.get("pairwise_layers", ())
+            ),
         )
 
     @classmethod

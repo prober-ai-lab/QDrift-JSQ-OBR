@@ -8,9 +8,6 @@
     error without compensation, and joint error with OBR.  Below 1, mid-rise
     is better; the first sparsity where a curve crosses 1 is marked.
 
-``clip-ratio-distribution``
-    Share of quantization groups that select each clip ratio rho*.
-
     python visualize/plots/grid_sparsity_crossover.py
 """
 
@@ -67,51 +64,13 @@ def ratio_figure(rows: list[dict], model: str) -> None:
     S.save(fig, S.figure_name(STEM, model, "error-ratio-vs-sparsity"))
 
 
-def rho_figure(rows: list[dict], model: str) -> None:
-    """Plot the share of groups selecting each clip ratio."""
-    totals: dict = defaultdict(lambda: defaultdict(int))
-    for r in rows:
-        for rho, count in r["rho"].items():
-            totals[(r["grid"], r["bits"])][float(rho)] += count
-    keys = sorted(totals, key=lambda k: (k[0] != "midrise", k[1]))
-    rhos = sorted({rho for counts in totals.values() for rho in counts})
-    colors = dict(zip(rhos, S.BLUE_RAMP[-len(rhos) :] if len(rhos) <= 4 else S.SERIES))
-    fig, ax = S.plt.subplots(figsize=(3.6, 2.2))
-    for x, key in enumerate(keys):
-        total = sum(totals[key].values())
-        bottom = 0.0
-        for rho in rhos:
-            share = 100 * totals[key].get(rho, 0) / total
-            ax.bar(
-                x,
-                share,
-                bottom=bottom,
-                color=colors[rho],
-                width=0.7,
-                edgecolor="white",
-                linewidth=1.0,
-                label=f"{rho:g}" if x == 0 else None,
-            )
-            bottom += share
-    ax.set_xticks(
-        range(len(keys)), [f"{'MR' if g == 'midrise' else 'MT'} W{b}" for g, b in keys]
-    )
-    ax.set_ylabel("groups (%)")
-    ax.grid(axis="x", visible=False)
-    ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), title=r"clip $\rho^\star$")
-    S.panel_label(ax, "selected clip ratio per group")
-    S.save(fig, S.figure_name(STEM, model, "clip-ratio-distribution"))
-
-
 def main() -> None:
     """Render every figure of this minitest."""
     args = S.arguments(__doc__.split("\n\n")[0])
     S.setup()
     payloads = S.load(STEM, args)
     errors = S.table(payloads, "errors", ("layer", "grid", "bits", "sparsity"))
-    rho = S.table(payloads, "rho", ("layer", "grid", "bits"))
     ratio_figure(errors, args.model)
-    rho_figure(rho, args.model)
 
 
 if __name__ == "__main__":
