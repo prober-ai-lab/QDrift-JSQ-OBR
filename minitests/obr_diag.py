@@ -20,7 +20,6 @@ Subcommands, run in order:
     t1     1a dither, 1b energy model, 1c low-rank regime
     t2     schedule head-to-head on the magnitude mask
     t3     late/early count sweep against the slot model
-    ties   mid-tread zero-score ties of QAP and an exact ``|w|`` tie-break
 ``report``
     Compact tables and pass/fail flags of every test written so far.
 
@@ -51,7 +50,6 @@ import datasets
 import torch
 
 from qdrift.obr.obr import PruningCompensationState, compensate_quantization_error
-from qdrift.prune.criteria import hessian_inverse_diag, qap_score
 from qdrift.prune.mask import mask_from_score
 from qdrift.quant.gptq import _hessian_inverse, gptq_quantize
 from qdrift.quant.quantize import dequantize, fake_quantize, qrange
@@ -719,8 +717,6 @@ def run(args: argparse.Namespace) -> None:
                             del stages
                         del swept_state
                 torch.cuda.empty_cache()
-            if "ties" in args.tests and seed == args.seeds[0]:
-                tables["ties"] += tie_rows(layer, geo, args)
             del state, model, geo
             torch.cuda.empty_cache()
             for test, rows in tables.items():
@@ -728,70 +724,6 @@ def run(args: argparse.Namespace) -> None:
                     OUT / f"{test}{args.suffix}.json", STEM, vars_json(args), rows=rows
                 )
             C.log(f"  {layer} seed {seed} done in {time.time() - start:.0f}s")
-
-
-def lexicographic(score: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-    """Rank by ``score``, ties broken by ``|w|`` (larger = keep)."""
-    first = weight.abs().argsort(dim=1, stable=True)
-    second = score.gather(1, first).argsort(dim=1, stable=True)
-    order = first.gather(1, second)
-    rank = torch.empty_like(order)
-    rank.scatter_(
-        1, order, torch.arange(order.shape[1], device=order.device).expand_as(order)
-    )
-    return rank.float()
-
-
-def tie_rows(layer, geo, args) -> list[dict]:
-    """Mid-tread QAP ties at W2/W4 and the effect of a ``|w|`` tie-break."""
-    weight, system, evalh = geo["weight"], geo["system"], geo["eval"]
-    hinv = hessian_inverse_diag(system)
-    rows = []
-    half = weight.shape[1] // 2
-    for bits in (2, 4):
-        scale = scale_of(weight, bits, args, "midtread")
-        error = (
-            fake_quantize(weight, scale, qrange(bits, "midtread"), "midtread") - weight
-        )
-        score = qap_score(weight, hinv, error)
-        zero = score == 0
-        per_row = zero.float().mean(1)
-        group_zero = zero.reshape(weight.shape[0], -1, 4).sum(2)
-        out = {
-            "layer": layer,
-            "bits": bits,
-            "zero_share": float(per_row.mean()),
-            "zero_share_row_max": float(per_row.max()),
-            "rows_tie_decided": float((zero.sum(1) > half).float().mean()),
-            "groups24_tie_decided": float((group_zero >= 3).float().mean()),
-        }
-        for structure in ("unstructured", "2:4"):
-            plain = mask_from_score(score, 0.5, structure)
-            broken = mask_from_score(lexicographic(score, weight), 0.5, structure)
-            key = "u" if structure == "unstructured" else "24"
-            out[f"mask_diff_{key}"] = float((plain != broken).float().mean() / 2 / 0.5)
-            if structure == "unstructured":
-                totals = []
-                for mask in (plain, broken):
-                    state = C.pruning_state(weight, mask, system, 0.5)
-                    stages = obr_stages(
-                        weight,
-                        mask,
-                        state,
-                        system,
-                        scale,
-                        bits,
-                        0.5,
-                        "gptq",
-                        "midtread",
-                    )
-                    totals.append(float(energy(stages["v3"] - weight, evalh).sum()))
-                    del state, stages
-                out["obr_total_plain"] = totals[0]
-                out["obr_total_tiebreak"] = totals[1]
-                out["tiebreak_ratio"] = totals[1] / totals[0]
-        rows.append(out)
-    return rows
 
 
 def vars_json(args: argparse.Namespace) -> dict:
@@ -937,15 +869,6 @@ def report(args: argparse.Namespace) -> None:
                 if (r["bits"], r["variant"], r["late_sparsity"]) == key
             ]
             print(f"  W{key[0]} {key[1]:4} late {key[2]:.2f}: {geomean(sel):.4f}")
-    rows = load_rows("ties")
-    if rows:
-        print("\nMid-tread QAP ties")
-        for r in rows:
-            print(
-                f"  {r['layer']:9} W{r['bits']} zero {r['zero_share']:.3f}  rows tie-decided {r['rows_tie_decided']:.3f}  "
-                f"2:4 groups tie-decided {r['groups24_tie_decided']:.3f}  mask diff u {r['mask_diff_u']:.3f} "
-                f"24 {r['mask_diff_24']:.3f}  OBR tie-break/plain {r['tiebreak_ratio']:.4f}"
-            )
 
 
 def main() -> None:

@@ -7,8 +7,7 @@ Supported axes:
 
 - sparsity: `2:4` / `4:8` require `0.5`; `unstructured` uses `--sparsity`; dense/quant baselines use no mask
 - pruning structure: `2:4`, `4:8` (hybrid dense/pair) and `unstructured`
-- pruning criterion: magnitude, WANDA, SparseGPT (`w^2 / [H^-1]_jj`), and QAP
-  (quantization-aware, `(w^2 - eps^2) / [H^-1]_jj`, `eps = Q(w) - w`)
+- pruning criterion: magnitude, WANDA, SparseGPT (`w^2 / [H^-1]_jj`)
 - weight/activation/KV granularity: per-tensor, per-channel, per-token, per-group
 - WAKV: weight/activation/KV 1-4 bit, with INT8 Tensor Core GEMM
 - 2:4 + INT4 weights (W4A16): Sparse-Marlin FP16xINT4 sparse kernel
@@ -154,7 +153,7 @@ measures them with the graph-friendly runtime:
 ```bash
 CUDA_VISIBLE_DEVICES=2 python3 -m main benchmark \
   --model llama2-7b \
-  --structure 2:4 --sparsity 0.5 --criterion qap \
+  --structure 2:4 --sparsity 0.5 --criterion magnitude \
   --w-bits 4 --w-gran channel \
   --a-bits 4 --kv-bits 4 \
   --quant gptq --comp none --rotation none \

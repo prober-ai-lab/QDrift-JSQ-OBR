@@ -55,14 +55,13 @@ from qdrift.obr.obr import (
 from qdrift.prune.criteria import (
     hessian_inverse_diag,
     magnitude_score,
-    qap_score,
     sparsegpt_score,
     wanda_score,
 )
 from qdrift.prune.mask import mask_from_score
 from qdrift.quant.gptq import gptq_quantize, rtn_quantize
 from qdrift.quant.pack import pack_codes
-from qdrift.quant.quantize import dequantize, fake_quantize, qrange
+from qdrift.quant.quantize import dequantize, qrange
 from qdrift.quant.scale import compute_scale
 
 __all__ = [
@@ -127,7 +126,6 @@ def _score(
     criterion: str,
     weight: torch.Tensor,
     diag: torch.Tensor,
-    error: torch.Tensor | None,
     hessian_system: torch.Tensor | None,
 ) -> torch.Tensor:
     if criterion == "magnitude":
@@ -139,8 +137,6 @@ def _score(
     hessian_inv_diag = hessian_inverse_diag(hessian_system)
     if criterion == "sparsegpt":
         return sparsegpt_score(weight, hessian_inv_diag)
-    if criterion == "qap":
-        return qap_score(weight, hessian_inv_diag, error)
     raise ValueError(f"unknown criterion {criterion}")
 
 
@@ -251,16 +247,7 @@ def _quantize_layer(
         diag = torch.diagonal(hessian_fp).clamp_min(0)
     else:
         diag = torch.ones(cols, device=weight.device)
-    # QAP weighs each weight against its rounding error under the layer's
-    # own quantizer.
-    error = None
-    if recipe.prune.criterion == "qap":
-        error = (
-            fake_quantize(weight_rot, full_scale.scale, qparams, recipe.weight.grid)
-            - weight_rot
-        )
-    score = _score(recipe.prune.criterion, weight_rot, diag, error, hessian_system)
-    error = None
+    score = _score(recipe.prune.criterion, weight_rot, diag, hessian_system)
     base_structure = recipe.prune.structure
     structure = base_structure
     pairwise_ratio = None
@@ -277,10 +264,8 @@ def _quantize_layer(
         else:
             dense_mask = mask_from_score(score, recipe.prune.sparsity, base_structure)
             pair_mask = mask_from_score(score, recipe.prune.sparsity, pair_structure)
-            # QAP scores may be negative; the loss ratio needs a non-negative one.
-            loss = score.clamp_min(0)
-            dense_loss = loss.masked_fill(dense_mask, 0).sum()
-            pair_loss = loss.masked_fill(pair_mask, 0).sum()
+            dense_loss = score.masked_fill(dense_mask, 0).sum()
+            pair_loss = score.masked_fill(pair_mask, 0).sum()
             pairwise_ratio = float(pair_loss / dense_loss.clamp_min(1e-12))
             structure = (
                 pair_structure
@@ -734,7 +719,7 @@ def compress(
         and 0.0 < recipe.pairwise_fraction < 1.0
     )
     need_hessian = (
-        recipe.prune.criterion in ("wanda", "sparsegpt", "qap")
+        recipe.prune.criterion in ("wanda", "sparsegpt")
         or recipe.compensation.method != "none"
         or recipe.weight.method == "gptq"
         or needs_pairwise_selection

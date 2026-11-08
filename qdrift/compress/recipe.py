@@ -8,7 +8,7 @@ A checkpoint id is built from the axes that define an experiment:
     [_{agran}][_{kvgran}]__{compensation}[__h{hash}]
 
 Example:
-    llama2-7b__0.5w4a4kv4__qap_mr_rc_rtn_pg128_an_kn__drift
+    llama2-7b__0.5w4a4kv4__magnitude_mr_rc_rtn_pg128_an_kn__drift
 
 The trailing ``h{hash}`` is only added when a knob that is not encoded in the
 readable part differs from its default (rotation seed, exact clip set, ...).
@@ -25,7 +25,7 @@ from typing import Any
 
 DEFAULT_CLIP_RHOS: tuple[float, ...] = (0.85, 0.9, 0.95, 1.0)
 SPARSITY_VALUES: tuple[float, ...] = tuple(round(index / 10, 1) for index in range(10))
-PRUNING_CRITERIA: tuple[str, ...] = ("magnitude", "wanda", "sparsegpt", "qap")
+PRUNING_CRITERIA: tuple[str, ...] = ("magnitude", "wanda", "sparsegpt")
 
 
 def _slug(name: str) -> str:

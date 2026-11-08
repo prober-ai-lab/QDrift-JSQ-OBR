@@ -1,0 +1,42 @@
+{
+ "obr_gptq_w4_ch_mt_u": {
+  "weight_clip_rho": "aeb24cd505eed5b063bef400f0fb5eb68f14a430493dbaf7bd79c91a087c7c22",
+  "weight_mask": "7711e450b524f9560d1336bd2594d59ba5fd0d99af3850f886b6b4face6f5fc8",
+  "weight_packed": "e901a409bf4be7e593d1d6ae44c0b858286b1e83158669c8bb74629a500a9939",
+  "weight_scale": "886d9a76e6bad52d3dfe0a015393d382c429d3904d32c29fb51a2654926a60a5",
+  "weight_shape": "e3cb4768eca582c388671b26c67e144b6da9bf6509d0ace9cbd97146172f70e8",
+  "new_weight": "15458adc821653823390ec397f87777b5f2e9d9da27913fdb8b82be6ff109d51"
+ },
+ "obr_rtn_w3_g64_mr_u": {
+  "weight_clip_rho": "a5dd85966d2bf36ec24b67cead36bdd0b930a3b3d64786a2eb8aa473a01bb3a5",
+  "weight_mask": "7711e450b524f9560d1336bd2594d59ba5fd0d99af3850f886b6b4face6f5fc8",
+  "weight_packed": "761b585efa018bfefa8c08fe96821adfc44aa8c128a2cf08c145e679ca93a9b6",
+  "weight_scale": "a489b2c3f1ee9429c3725a8ae791e477defc342409e4789d6609b2bb03035a87",
+  "weight_shape": "e3cb4768eca582c388671b26c67e144b6da9bf6509d0ace9cbd97146172f70e8",
+  "new_weight": "34bb14be000b9f50ca82f2d3cf1a9e5f823fb4b1fc34b8b1938666f425f06f05"
+ },
+ "drift_gptq_w4_ch_mt_u": {
+  "weight_clip_rho": "aeb24cd505eed5b063bef400f0fb5eb68f14a430493dbaf7bd79c91a087c7c22",
+  "weight_mask": "7711e450b524f9560d1336bd2594d59ba5fd0d99af3850f886b6b4face6f5fc8",
+  "weight_packed": "98d458b9fa7a888698a109b41495b3e8bef26fac2fc86c340e772e770ee563d1",
+  "weight_scale": "886d9a76e6bad52d3dfe0a015393d382c429d3904d32c29fb51a2654926a60a5",
+  "weight_shape": "e3cb4768eca582c388671b26c67e144b6da9bf6509d0ace9cbd97146172f70e8",
+  "new_weight": "94b34768eb919cc0ebeddac05c023b8cfc4111bae3787ee4486baac01a8194dd"
+ },
+ "drift_rtn_w2_g64_mr_u": {
+  "weight_clip_rho": "2f180cab5cb80344e7ddfac03c0624487f6c67bf4e39e69b6a81bb343200a8e4",
+  "weight_mask": "85910df2b8c942a4976e76aafb8531644fb6681d28f37a83882a9a5f1bf06c6c",
+  "weight_packed": "e483ef3d867f966f905758a0a29ca8a1bb36e03f2070242b83a85b547b523fe3",
+  "weight_scale": "6b3728333a5897869840c798ea6266626d492e59c4a37aed431176871b1fa553",
+  "weight_shape": "e3cb4768eca582c388671b26c67e144b6da9bf6509d0ace9cbd97146172f70e8",
+  "new_weight": "1915cb1d2e4edb577d976679facd4f044ba649c80a2b019ff7b327b60fb62d37"
+ },
+ "obr_gptq_w4_ch_mt_24": {
+  "weight_clip_rho": "aeb24cd505eed5b063bef400f0fb5eb68f14a430493dbaf7bd79c91a087c7c22",
+  "weight_mask": "99f7f6b354a7911235a4855bb0b9f54f7fba71a8c7e8a9b11f7f0427569a24c7",
+  "weight_packed": "ba61d59a8dba492766d5655d8436345e28150c28f6bc3c245b3bba03d16cfb5c",
+  "weight_scale": "886d9a76e6bad52d3dfe0a015393d382c429d3904d32c29fb51a2654926a60a5",
+  "weight_shape": "e3cb4768eca582c388671b26c67e144b6da9bf6509d0ace9cbd97146172f70e8",
+  "new_weight": "33df91fda5d0f6901bcfb7d2b76f1e34f9688a4d244fdf539e99cec22d517039"
+ }
+}
