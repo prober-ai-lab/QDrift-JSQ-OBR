@@ -39,6 +39,7 @@ from qdrift.compress.recipe import (
     CompressionRecipe,
     GranularitySpec,
     PruneSpec,
+    RotationSpec,
     WeightQuantSpec,
 )
 from qdrift.compress.runs import RESULTS_V2, claim, git_rev, run_name
@@ -74,6 +75,7 @@ def recipe_for(args: argparse.Namespace, mechanism: str) -> CompressionRecipe:
         ),
         activation=ActivationQuantSpec(bits=args.a_bits, grid="midtread"),
         prune=PruneSpec(sparsity=0.5, structure="unstructured", criterion="magnitude"),
+        rotation=RotationSpec(mode=args.rotation, seed=args.seed),
         compensation=CompensationSpec(method="obr", mechanism=mechanism),
         nsamples=args.nsamples,
         seqlen=args.seqlen,
