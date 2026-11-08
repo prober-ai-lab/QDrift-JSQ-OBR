@@ -535,6 +535,7 @@ class CompressionRecipe:
             "schema_version": 2,
             "checkpoint_id": self.checkpoint_id(),
             "model": self.model,
+            "mechanism": self.compensation.mechanism_tag(),
             "created_at": created_at
             or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "recipe": self.to_dict(),
@@ -591,7 +592,13 @@ def sparse_recipe(recipe: CompressionRecipe) -> CompressionRecipe:
     if sparse.checkpoint_id() == dense_recipe(recipe).checkpoint_id():
         # Nothing is pruned: keep the dense baseline id so callers reuse it.
         return sparse
-    return replace(sparse, compensation=replace(recipe.compensation, method="obr"))
+    # The fp16 sparse baseline is shared by every mechanism: always OBR.
+    return replace(
+        sparse,
+        compensation=replace(
+            recipe.compensation, method="obr", mechanism="obr", noise_scale=1.0
+        ),
+    )
 
 
 def variant_recipes(

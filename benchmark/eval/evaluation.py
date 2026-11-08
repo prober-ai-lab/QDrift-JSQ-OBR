@@ -618,6 +618,7 @@ def run_benchmark(recipe: CompressionRecipe, args: Any) -> int:
         "checkpoint": str(joint_path),
         "checkpoint_id": checkpoint_id,
         "model": recipe.model,
+        "mechanism": recipe.compensation.mechanism_tag(),
         "recipe": recipe.to_dict(),
         "recipe_hash": recipe.recipe_hash(),
         "provenance": {

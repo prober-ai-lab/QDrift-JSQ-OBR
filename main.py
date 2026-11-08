@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from benchmark.eval.evaluation import PPL_DATASETS, ZEROSHOT_TASKS, run_benchmark
 from qdrift.compress.pipeline import compress_regimes, parse_devices
 from qdrift.compress.recipe import (
+    MECHANISMS,
     PRUNING_CRITERIA,
     ActivationQuantSpec,
     CompensationSpec,
@@ -64,7 +65,9 @@ def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--kv-grid", choices=("midrise", "midtread"), default=None, help="KV-cache grid (default: --grid)")
     parser.add_argument("--range", choices=("full", "clip"), default="clip")
     parser.add_argument("--quant", choices=("rtn", "gptq"), default="gptq")
-    parser.add_argument("--comp", choices=("none", "obr", "drift"), default="obr")
+    parser.add_argument("--comp", choices=("none", "obr", "drift"), default="obr", help="calibration objective: obr=symmetric, drift=QDrift asymmetric")
+    parser.add_argument("--mechanism", choices=MECHANISMS, default="obr", help="compensation mechanism (docs/mechanisms.md)")
+    parser.add_argument("--noise-scale", type=float, default=1.0, help="wiener: multiply the measured activation noise sigma_a^2")
     parser.add_argument("--rotation", choices=("hadamard", "none"), default="hadamard", help="hadamard=fast global Hadamard; none=identity")
     parser.add_argument("--nsamples", type=int, default=128)
     parser.add_argument("--seqlen", type=int, default=2048)
@@ -140,7 +143,12 @@ def _build_recipe(args: argparse.Namespace) -> CompressionRecipe:
             criterion=args.criterion,
         ),
         rotation=RotationSpec(mode=args.rotation, seed=args.seed),
-        compensation=CompensationSpec(method=args.comp, damping=args.damping),
+        compensation=CompensationSpec(
+            method=args.comp,
+            damping=args.damping,
+            mechanism=args.mechanism,
+            noise_scale=args.noise_scale,
+        ),
         nsamples=args.nsamples,
         seqlen=args.seqlen,
         batch_size=args.batch_size,
