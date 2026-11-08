@@ -38,10 +38,42 @@ REFERENCE = Path(__file__).parent / "data" / "obr_reference.json"
 
 # name: (method, quant, bits, grid, granularity, structure, criterion)
 CASES = {
-    "obr_gptq_w4_ch_mt_u": ("obr", "gptq", 4, "midtread", "channel", "unstructured", "magnitude"),
-    "obr_rtn_w3_g64_mr_u": ("obr", "rtn", 3, "midrise", "group", "unstructured", "magnitude"),
-    "drift_gptq_w4_ch_mt_u": ("drift", "gptq", 4, "midtread", "channel", "unstructured", "magnitude"),
-    "drift_rtn_w2_g64_mr_u": ("drift", "rtn", 2, "midrise", "group", "unstructured", "sparsegpt"),
+    "obr_gptq_w4_ch_mt_u": (
+        "obr",
+        "gptq",
+        4,
+        "midtread",
+        "channel",
+        "unstructured",
+        "magnitude",
+    ),
+    "obr_rtn_w3_g64_mr_u": (
+        "obr",
+        "rtn",
+        3,
+        "midrise",
+        "group",
+        "unstructured",
+        "magnitude",
+    ),
+    "drift_gptq_w4_ch_mt_u": (
+        "drift",
+        "gptq",
+        4,
+        "midtread",
+        "channel",
+        "unstructured",
+        "magnitude",
+    ),
+    "drift_rtn_w2_g64_mr_u": (
+        "drift",
+        "rtn",
+        2,
+        "midrise",
+        "group",
+        "unstructured",
+        "sparsegpt",
+    ),
     "obr_gptq_w4_ch_mt_24": ("obr", "gptq", 4, "midtread", "channel", "2:4", "wanda"),
 }
 

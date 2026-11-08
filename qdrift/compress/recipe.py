@@ -26,6 +26,7 @@ from typing import Any
 DEFAULT_CLIP_RHOS: tuple[float, ...] = (0.85, 0.9, 0.95, 1.0)
 SPARSITY_VALUES: tuple[float, ...] = tuple(round(index / 10, 1) for index in range(10))
 PRUNING_CRITERIA: tuple[str, ...] = ("magnitude", "wanda", "sparsegpt")
+MECHANISMS: tuple[str, ...] = ("obr", "wiener")
 
 
 def _slug(name: str) -> str:
@@ -294,11 +295,20 @@ class RotationSpec:
 
 @dataclass(frozen=True)
 class CompensationSpec:
-    """OBR / DriftOBR compensation."""
+    """Calibration objective and compensation mechanism.
+
+    ``method`` picks the calibration objective: ``obr`` (symmetric, on the
+    sequentially propagated inputs), ``drift`` (QDrift's asymmetric,
+    dual-path calibration) or ``none``.  ``mechanism`` picks the solver that
+    uses it (see qdrift.mechanisms); ``noise_scale`` multiplies the measured
+    activation noise of the ``wiener`` mechanism.
+    """
 
     method: str = "obr"
     alpha: float = 0.5
     damping: float = 0.01
+    mechanism: str = "obr"
+    noise_scale: float = 1.0
 
     def validate(self) -> None:
         if self.method not in ("none", "obr", "drift"):
@@ -307,13 +317,31 @@ class CompensationSpec:
             raise ValueError("compensation alpha must be in [0, 1]")
         if self.damping < 0.0:
             raise ValueError("damping must be non-negative")
+        if self.mechanism not in MECHANISMS:
+            raise ValueError(f"unknown mechanism {self.mechanism}")
+        if self.noise_scale <= 0.0:
+            raise ValueError("noise_scale must be positive")
+        if self.mechanism == "obr" and self.noise_scale != 1.0:
+            raise ValueError("noise_scale only applies to the wiener mechanism")
+
+    def mechanism_tag(self) -> str:
+        """``obr``, ``wiener`` or e.g. ``wiener0.5x``."""
+        if self.noise_scale == 1.0:
+            return self.mechanism
+        return f"{self.mechanism}{self.noise_scale:g}x"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "method": self.method,
             "alpha": self.alpha,
             "damping": self.damping,
         }
+        # The default mechanism stays implicit so recipe hashes, and with
+        # them the ids of existing checkpoints, do not change.
+        if self.mechanism != "obr":
+            data["mechanism"] = self.mechanism
+            data["noise_scale"] = self.noise_scale
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CompensationSpec:
@@ -321,6 +349,8 @@ class CompensationSpec:
             method=str(data.get("method", "obr")),
             alpha=float(data.get("alpha", 0.5)),
             damping=float(data.get("damping", 0.01)),
+            mechanism=str(data.get("mechanism", "obr")),
+            noise_scale=float(data.get("noise_scale", 1.0)),
         )
 
 
@@ -488,6 +518,8 @@ class CompressionRecipe:
             parts.append(f"k{self.kv_cache.granularity.tag()}")
         infix = "_".join(parts)
         tag = f"{prefix}__{infix}__{self.compensation.method}"
+        if self.compensation.mechanism != "obr":
+            tag += f"-{self.compensation.mechanism_tag()}"
         if self.prune.structure in ("2:4", "4:8"):
             tag += f"__pw{self.pairwise_fraction:g}"
         if self._has_hidden_nondefault():

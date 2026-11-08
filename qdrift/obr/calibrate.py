@@ -206,10 +206,7 @@ def capture_calibration_start(
     finally:
         for handle in handles:
             handle.remove()
-    inputs = {
-        name: buffers[name][: offsets[name]]
-        for name in capture_names
-    }
+    inputs = {name: buffers[name][: offsets[name]] for name in capture_names}
     return CalibrationStart(hidden=hidden, kwargs=kwargs_list, inputs=inputs)
 
 
