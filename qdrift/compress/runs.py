@@ -1,0 +1,116 @@
+# Copyright (c) 2026 QDrift Authors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""
+Run names, the v2 storage roots, and the metadata every v2 result carries.
+
+A run is named ``{model}_{mechanism}_w{W}a{A}_{pattern}_{calib}_seed{n}``,
+e.g. ``llama2-7b_obr_w4a4_s50_qdrift_seed0``.  Checkpoints go under
+``checkpoints/v2/`` and results under ``results/v2/``, so nothing written
+here can overwrite an older result; an existing name is refused unless the
+caller passes ``overwrite``.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+from typing import Any
+
+from qdrift.compress.recipe import CompressionRecipe
+
+__all__ = [
+    "CHECKPOINTS_V2",
+    "RESULTS_V2",
+    "claim",
+    "git_rev",
+    "run_metadata",
+    "run_name",
+]
+
+ROOT = Path(__file__).resolve().parents[2]
+CHECKPOINTS_V2 = ROOT / "checkpoints" / "v2"
+RESULTS_V2 = ROOT / "results" / "v2"
+
+# compensation.method -> calibration tag
+CALIBRATION_TAGS = {"drift": "qdrift", "obr": "seq", "none": "nocomp"}
+
+
+def pattern_tag(recipe: CompressionRecipe) -> str:
+    """``s50`` for 50% unstructured, ``2to4`` / ``4to8`` for N:M, ``s0`` dense."""
+    structure = recipe.prune.structure
+    if structure in ("2:4", "4:8"):
+        return structure.replace(":", "to")
+    return f"s{round(recipe.prune.sparsity * 100)}"
+
+
+def run_name(recipe: CompressionRecipe) -> str:
+    """The v2 run/checkpoint/result name of a recipe."""
+    return "_".join(
+        [
+            recipe.model,
+            recipe.compensation.mechanism_tag(),
+            f"w{recipe.weight.bits}a{recipe.activation.bits}",
+            pattern_tag(recipe),
+            CALIBRATION_TAGS[recipe.compensation.method],
+            f"seed{recipe.rotation.seed}",
+        ]
+    )
+
+
+def claim(paths: list[Path], overwrite: bool = False) -> None:
+    """Refuse to reuse a name unless ``overwrite``; create parent folders."""
+    taken = [str(path) for path in paths if path.exists()]
+    if taken and not overwrite:
+        raise FileExistsError(
+            "refusing to overwrite " + ", ".join(taken) + " (pass --overwrite)"
+        )
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def git_rev() -> str:
+    """Commit of the code; ``QDRIFT_REV`` on copies without ``.git``."""
+    try:
+        rev = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=ROOT,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        dirty = subprocess.call(
+            ["git", "diff", "--quiet", "HEAD"], cwd=ROOT, stderr=subprocess.DEVNULL
+        )
+        return rev + ("+dirty" if dirty else "")
+    except (OSError, subprocess.CalledProcessError):
+        return os.environ.get("QDRIFT_REV", "unknown")
+
+
+def run_metadata(
+    recipe: CompressionRecipe, layers: dict[str, dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """Fields every v2 checkpoint and result JSON carries.
+
+    ``layers`` is the checkpoint's per-layer metadata; its mechanism fields
+    (``act_noise``, ``lambda``, ``floor``, ...) are copied per layer.
+    """
+    keys = ("mechanism", "act_noise", "noise_scale", "lambda", "damping", "floor")
+    per_layer = {
+        name: {key: meta[key] for key in keys if key in meta}
+        for name, meta in (layers or {}).items()
+    }
+    return {
+        "name": run_name(recipe),
+        "model": recipe.model,
+        "mechanism": recipe.compensation.mechanism_tag(),
+        "wbits": recipe.weight.bits,
+        "abits": recipe.activation.bits,
+        "sparsity": recipe.prune.sparsity,
+        "pattern": pattern_tag(recipe),
+        "calibration": CALIBRATION_TAGS[recipe.compensation.method],
+        "seed": recipe.rotation.seed,
+        "git": git_rev(),
+        "layers": per_layer,
+        "floor_layers": sum(1 for meta in per_layer.values() if meta.get("floor")),
+        "config": recipe.to_dict(),
+    }

@@ -32,6 +32,7 @@ import torch
 from safetensors.torch import load_file, save_file
 
 from qdrift.compress.recipe import CompressionRecipe, variant_recipes
+from qdrift.compress.runs import run_metadata
 from qdrift.data.dataloader import make_calibration_chunks
 from qdrift.mechanisms import LayerStats, get_mechanism
 from qdrift.data.tokenizer import load_tokenizer
@@ -679,12 +680,15 @@ def compress(
     output_dir: str = "checkpoints",
     devices: list[str] | None = None,
     mask_sink: str | Path | None = None,
+    name: str | None = None,
 ) -> Path:
     """Compress a model and write a checkpoint plus sidecar metadata.
 
     When ``mask_sink`` is set, each layer mask is published as soon as that
     layer is compressed.  A concurrent sparse-baseline worker can then consume
-    masks while the joint run is still in progress.
+    masks while the joint run is still in progress.  ``name`` replaces the
+    checkpoint id as the file name and adds the v2 run metadata
+    (qdrift.compress.runs) to the sidecar.
     """
     recipe.validate()
     pool = DevicePool(devices or [device])
@@ -1101,7 +1105,7 @@ def compress(
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_id = recipe.checkpoint_id()
+    checkpoint_id = name or recipe.checkpoint_id()
     tensor_path = out_dir / f"{checkpoint_id}.safetensors"
     config_path = out_dir / f"{checkpoint_id}.json"
     save_file(tensors, str(tensor_path))
@@ -1117,6 +1121,8 @@ def compress(
         "scale_layout": scale_layout,
     }
     config["layers"] = layer_meta
+    if name is not None:
+        config["run"] = run_metadata(recipe, layer_meta)
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     if mask_dir is not None:
         (mask_dir / "_done").write_text(f"{len(layer_meta)}\n", encoding="utf-8")

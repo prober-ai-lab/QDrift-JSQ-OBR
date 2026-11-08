@@ -5,10 +5,17 @@
 from __future__ import annotations
 
 import argparse
+import json
+import time
 from collections.abc import Sequence
 
-from benchmark.eval.evaluation import PPL_DATASETS, ZEROSHOT_TASKS, run_benchmark
-from qdrift.compress.pipeline import compress_regimes, parse_devices
+from benchmark.eval.evaluation import (
+    PPL_DATASETS,
+    ZEROSHOT_TASKS,
+    ppl_eval,
+    run_benchmark,
+)
+from qdrift.compress.pipeline import compress, compress_regimes, parse_devices
 from qdrift.compress.recipe import (
     MECHANISMS,
     PRUNING_CRITERIA,
@@ -177,6 +184,77 @@ def _compress(args: argparse.Namespace, recipe: CompressionRecipe) -> int:
     return 0
 
 
+def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
+    # fmt: off
+    parser.add_argument("--overwrite", action="store_true", help="replace an existing v2 checkpoint/result of the same name")
+    parser.add_argument("--ppl", action=argparse.BooleanOptionalAction, default=True, help="evaluate WikiText-2 (full test) and C4 PPL at 2048 tokens")
+    parser.add_argument("--c4-chunks", type=int, default=256)
+    parser.add_argument("--eval-batch-size", type=int, default=2)
+    # fmt: on
+
+
+def _run(args: argparse.Namespace, recipe: CompressionRecipe) -> int:
+    """v2: compress the joint checkpoint under its run name and evaluate it."""
+    from benchmark.eval.runtime import load_runtime_model
+    from qdrift.compress.runs import (
+        CHECKPOINTS_V2,
+        RESULTS_V2,
+        claim,
+        run_metadata,
+        run_name,
+    )
+    from qdrift.data.dataloader import get_loaders
+
+    name = run_name(recipe)
+    checkpoint = CHECKPOINTS_V2 / f"{name}.safetensors"
+    sidecar = checkpoint.with_suffix(".json")
+    result = RESULTS_V2 / f"{name}.json"
+    claim([checkpoint, sidecar, result], args.overwrite)
+    devices = _devices(args)
+    start = time.perf_counter()
+    compress(
+        recipe,
+        manifest_path="modelzoo/manifest.yaml",
+        device=devices[0],
+        output_dir=str(CHECKPOINTS_V2),
+        devices=devices,
+        name=name,
+    )
+    layers = json.loads(sidecar.read_text(encoding="utf-8")).get("layers")
+    record = {
+        **run_metadata(recipe, layers),
+        "checkpoint": str(checkpoint),
+        "compress_s": time.perf_counter() - start,
+    }
+    if args.ppl:
+        model, tokenizer, _ = load_runtime_model(
+            checkpoint,
+            "joint",
+            manifest_path="modelzoo/manifest.yaml",
+            device=devices[0],
+            allow_sparse=False,
+        )
+        record["ppl"] = {}
+        for dataset in ("wikitext2", "c4"):
+            chunks = get_loaders(
+                dataset,
+                tokenizer,
+                nsamples=args.c4_chunks if dataset == "c4" else None,
+                seqlen=2048,
+                eval_mode=True,
+                seed=42,
+            )
+            value = ppl_eval(
+                model, chunks, device=devices[0], batch_size=args.eval_batch_size
+            )
+            record["ppl"][dataset] = value[0] if isinstance(value, tuple) else value
+            print(f"{name} ppl {dataset} = {record['ppl'][dataset]:.4f}", flush=True)
+    record["total_s"] = time.perf_counter() - start
+    result.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    print(f"saved {result}", flush=True)
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse arguments and dispatch to compression or benchmarking."""
     parser = argparse.ArgumentParser(description="QDrift compression and benchmark")
@@ -188,6 +266,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     _add_common_arguments(compress_parser)
     _add_compress_arguments(compress_parser)
+
+    run_parser = subparsers.add_parser(
+        "run",
+        help="compress one joint checkpoint by v2 run name and evaluate its PPL",
+    )
+    _add_common_arguments(run_parser)
+    _add_compress_arguments(run_parser)
+    _add_run_arguments(run_parser)
 
     benchmark_parser = subparsers.add_parser(
         "benchmark",
@@ -201,6 +287,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     recipe.validate()
     if args.command == "compress":
         return _compress(args, recipe)
+    if args.command == "run":
+        return _run(args, recipe)
     return run_benchmark(recipe, args)
 
 
