@@ -58,7 +58,7 @@ from qdrift.prune.criteria import (
 )
 from qdrift.prune.mask import mask_from_score
 from qdrift.quant.gptq import gptq_quantize, rtn_quantize
-from qdrift.quant.activation import fake_quantize_activations, quantize_inputs
+from qdrift.quant.activation import fake_quantize_activations, quantize_outlier_tokens
 from qdrift.quant.pack import pack_codes
 from qdrift.quant.quantize import dequantize, qrange
 from qdrift.quant.scale import compute_scale
@@ -737,12 +737,10 @@ def compress(
     )
     fp_inputs: dict[str, torch.Tensor] = {}
     sequential: SequentialCalibration | None = None
-    # qir: the layer statistics and the replayed prefix use the runtime's
-    # activation quantizer (docs/mechanisms.md).
-    quantize_acts = (
-        recipe.compensation.method != "none"
-        and get_mechanism(recipe.compensation.mechanism).quantizes_inputs
-    )
+    # qir: the replayed prefix uses the runtime's activation quantizer and the
+    # layer statistics use it on the outlier tokens (docs/mechanisms.md).
+    mechanism = get_mechanism(recipe.compensation.mechanism)
+    quantize_acts = recipe.compensation.method != "none" and mechanism.quantizes_inputs
     act = recipe.activation
     act_args = (
         act.bits,
@@ -844,9 +842,10 @@ def compress(
             else:
                 fp_input = calibrated
             if quantize_acts:
-                # Solve on Q_a(z), fit the output on z (or x under QDrift).
-                compressed_input = quantize_inputs(
-                    calibrated, *act_args, device=main_device
+                # Solve on z with Q_a applied to its outlier tokens, fit the
+                # output on z (or x under QDrift).
+                compressed_input = quantize_outlier_tokens(
+                    calibrated, mechanism.outlier_factor, *act_args, device=main_device
                 )
 
         results: list[LayerResult] = []

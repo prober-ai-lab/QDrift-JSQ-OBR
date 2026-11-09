@@ -62,9 +62,11 @@ class Mechanism(ABC):
     """A pruning + quantization compensation mechanism."""
 
     name: str = ""
-    # Whether calibration hands the layer its inputs as the runtime
-    # activation quantizer sees them (z = Q_a(.)) instead of in full precision.
+    # Whether calibration replays the prefix with the runtime activation
+    # quantizer and hands the layer Q_a(z) on the tokens whose max|z_t|
+    # exceeds ``outlier_factor`` times the median, z elsewhere.
     quantizes_inputs: bool = False
+    outlier_factor: float = 0.0
 
     @abstractmethod
     def compensate(

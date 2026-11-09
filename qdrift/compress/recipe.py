@@ -301,8 +301,8 @@ class CompensationSpec:
     sequentially propagated inputs), ``drift`` (QDrift's asymmetric,
     dual-path calibration) or ``none``.  ``mechanism`` picks how the layer
     statistics are formed (see qdrift.mechanisms): ``obr`` on the
-    full-precision activations of the compressed path, ``qir`` on the
-    activations as the runtime quantizes them.
+    full-precision activations of the compressed path, ``qir`` with the
+    outlier tokens quantized as the runtime quantizes them.
     """
 
     method: str = "obr"

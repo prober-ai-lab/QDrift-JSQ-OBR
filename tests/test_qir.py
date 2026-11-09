@@ -1,10 +1,11 @@
 # Copyright (c) 2026 QDrift Authors. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""The qir mechanism: statistics of runtime-quantized inputs.
+"""The qir mechanism: statistics with the outlier tokens runtime-quantized.
 
-Per row the objective is ``f(v) = mean_t (v^T Q_a(z_t) - w^T x_t)^2`` with
-``v_P = 0``, compressed-path inputs ``z`` and target inputs ``x`` (``x = z``
-without QDrift).  References are built from the samples alone, in float64.
+Per row the objective is ``f(v) = mean_t (v^T z_hat_t - w^T x_t)^2`` with
+``v_P = 0``, ``z_hat_t = Q_a(z_t)`` on outlier tokens and ``z_t`` elsewhere,
+compressed-path inputs ``z`` and target inputs ``x`` (``x = z`` without
+QDrift).  References are built from the samples alone, in float64.
 
     python -m pytest tests/test_qir.py
 """
@@ -32,21 +33,23 @@ from qdrift.obr.obr import compensate_pruning_error  # noqa: E402
 from qdrift.prune.mask import mask_from_score  # noqa: E402
 from qdrift.quant.activation import (  # noqa: E402
     fake_quantize_activations,
-    quantize_inputs,
+    outlier_tokens,
+    quantize_outlier_tokens,
 )
 
 
 @pytest.mark.parametrize("drift", [False, True])
 def test_pruning_stage_is_least_squares(drift: bool) -> None:
-    """OBR's pruning update on (H_q, D_q) solves the quantized-input fit."""
+    """OBR's pruning update on (H, D) of z_hat solves the per-row fit."""
     generator = torch.Generator().manual_seed(0)
     rows, cols, tokens = 6, 32, 4000
     basis = torch.randn(cols, 10, generator=generator, dtype=torch.float64)
     x = torch.randn(tokens, 10, generator=generator, dtype=torch.float64) @ basis.t()
     x += 0.2 * torch.randn(tokens, cols, generator=generator, dtype=torch.float64)
     x[:, 5] *= 8.0
+    x[::40] *= 30.0
     z = x + 0.2 * torch.randn_like(x) if drift else x
-    zq = fake_quantize_activations(z, 4, "midtread").double()
+    zq = quantize_outlier_tokens(z, 8.0, 4, "midtread", device="cpu")
     weight = 0.05 * torch.randn(rows, cols, generator=generator, dtype=torch.float64)
     mask = mask_from_score(weight.abs(), 0.5, "unstructured")
 
@@ -61,13 +64,16 @@ def test_pruning_stage_is_least_squares(drift: bool) -> None:
         assert torch.allclose(state.retained[row], expect.squeeze(1), atol=1e-8)
 
 
-def test_quantize_inputs_streams_fake_quantization() -> None:
+def test_only_outlier_tokens_are_quantized() -> None:
     generator = torch.Generator().manual_seed(1)
     x = torch.randn(1000, 64, generator=generator)
-    x[:, 7] *= 30.0
-    got = quantize_inputs(x, 4, "midtread", device="cpu", chunk=128)
+    x[::50, 7] *= 300.0
+    hot = outlier_tokens(x, 8.0, device="cpu")
+    assert torch.equal(hot.nonzero().squeeze(1), torch.arange(0, 1000, 50))
+    got = quantize_outlier_tokens(x, 8.0, 4, "midtread", device="cpu", chunk=7)
     assert got.dtype == x.dtype and got.device == x.device
-    assert torch.equal(got, fake_quantize_activations(x, 4, "midtread"))
+    assert torch.equal(got[hot], fake_quantize_activations(x[hot], 4, "midtread"))
+    assert torch.equal(got[~hot], x[~hot])
 
 
 class _Block(torch.nn.Module):
@@ -108,9 +114,10 @@ def test_replay_quantizes_every_linear_but_the_captured_one() -> None:
     assert all(not module._forward_pre_hooks for module in quantized)
 
 
-def test_qir_is_obr_on_quantized_inputs() -> None:
+def test_qir_is_obr_on_outlier_quantized_inputs() -> None:
     mechanism = get_mechanism("qir")
-    assert mechanism.quantizes_inputs and not get_mechanism("obr").quantizes_inputs
+    assert mechanism.quantizes_inputs and mechanism.outlier_factor == 8.0
+    assert not get_mechanism("obr").quantizes_inputs
 
 
 def test_qir_needs_quantized_activations() -> None:

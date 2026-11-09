@@ -1,30 +1,28 @@
 # Copyright (c) 2026 QDrift Authors. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Figures for the QIR-variants minitest.
+"""Figures for the QIR-depth minitest.
 
 ``ratio-vs-depth``
-    Held-out deployment error of each QIR variant over OBR's, geometric mean
-    over the layer types of a block, against the block index; one panel per
-    sparsity.  Below 1, the variant beats OBR.
+    Held-out deployment error of QIR over OBR for every layer, against the
+    block index, one marker per layer type; one panel per sparsity.  Below 1,
+    QIR beats OBR.
 ``noise-vs-depth``
-    Per block: activation noise E||W n||^2 / E||W x||^2 and the share of it
-    carried by outlier tokens, geometric mean over layer types.
+    Per layer: activation noise E||W n||^2 / E||W x||^2 and the share of it
+    carried by outlier tokens.
 
-    python visualize/plots/qir_variants.py
+    python visualize/plots/qir_depth.py
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
-
 import style as S
 
-STEM = "qir_variants"
-VARIANTS = ("qir", "qir_half", "qir_diag", "qir_outlier", "qir_both")
+STEM = "qir_depth"
+MARKERS = {"q": "o", "o": "s", "up": "^", "down": "D"}
 
 
 def ratio_figure(rows: list[dict], model: str) -> None:
-    """Plot the variant / OBR error ratio against depth."""
+    """Plot the QIR / OBR error ratio of every layer against depth."""
     sparsities = sorted({r["sparsity"] for r in rows})
     index = {(r["layer"], r["sparsity"], r["mechanism"]): r for r in rows}
     fig, axes = S.plt.subplots(
@@ -32,30 +30,28 @@ def ratio_figure(rows: list[dict], model: str) -> None:
         squeeze=False, sharey=True,
     )
     for ax, sparsity in zip(axes[0], sparsities):
-        for color, variant in zip(S.SERIES, VARIANTS):
-            by_block = defaultdict(list)
-            for (layer, s, mech), r in index.items():
-                if s != sparsity or mech != variant:
-                    continue
-                base = index[(layer, s, "obr")]["err"]
-                by_block[r["block"]].append(r["err"] / base)
-            xs = sorted(by_block)
-            ax.plot(
-                xs, [S.geomean(by_block[b]) for b in xs],
-                color=color, marker="o", label=variant,
+        for color, (kind, marker) in zip(S.SERIES, MARKERS.items()):
+            points = sorted(
+                (r["block"], r["err"] / index[(r["layer"], sparsity, "obr")]["err"])
+                for r in rows
+                if r["sparsity"] == sparsity and r["mechanism"] == "qir"
+                and r["type"] == kind
             )
+            if points:
+                xs, ys = zip(*points)
+                ax.plot(xs, ys, color=color, marker=marker, label=kind)
         ax.axhline(1, color=S.AXIS, linewidth=0.9)
         ax.set_yscale("log")
         ax.set_xlabel("block")
         S.panel_label(ax, f"$s={sparsity:g}$")
-    axes[0][0].set_ylabel("held-out error / OBR")
+    axes[0][0].set_ylabel("held-out error, QIR / OBR")
     axes[0][-1].legend(loc="upper left", bbox_to_anchor=(1.0, 1.0))
     S.save(fig, S.figure_name(STEM, model, "ratio-vs-depth"))
 
 
 def noise_figure(rows: list[dict], model: str) -> None:
     """Plot the activation noise and its outlier share against depth."""
-    layers = {r["layer"]: r for r in rows}.values()
+    layers = list({r["layer"]: r for r in rows}.values())
     fig, axes = S.plt.subplots(1, 2, figsize=(6.8, 2.4), squeeze=False)
     for ax, (key, label, log) in zip(
         axes[0],
@@ -64,15 +60,16 @@ def noise_figure(rows: list[dict], model: str) -> None:
             ("outlier_noise", "outlier-token share of the noise", False),
         ),
     ):
-        by_block = defaultdict(list)
-        for r in layers:
-            by_block[r["block"]].append(r[key])
-        xs = sorted(by_block)
-        ax.plot(xs, [S.geomean(by_block[b]) for b in xs], color=S.SERIES[0], marker="o")
+        for color, (kind, marker) in zip(S.SERIES, MARKERS.items()):
+            points = sorted((r["block"], r[key]) for r in layers if r["type"] == kind)
+            if points:
+                xs, ys = zip(*points)
+                ax.plot(xs, ys, color=color, marker=marker, label=kind)
         if log:
             ax.set_yscale("log")
         ax.set_xlabel("block")
         S.panel_label(ax, label)
+    axes[0][-1].legend(loc="upper left", bbox_to_anchor=(1.0, 1.0))
     S.save(fig, S.figure_name(STEM, model, "noise-vs-depth"))
 
 

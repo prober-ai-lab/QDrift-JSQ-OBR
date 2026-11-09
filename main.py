@@ -73,7 +73,7 @@ def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--range", choices=("full", "clip"), default="clip")
     parser.add_argument("--quant", choices=("rtn", "gptq"), default="gptq")
     parser.add_argument("--comp", choices=("none", "obr", "drift"), default="obr", help="calibration objective: obr=symmetric, drift=QDrift asymmetric")
-    parser.add_argument("--mechanism", choices=MECHANISMS, default="obr", help="obr: statistics on full-precision activations; qir: on the runtime-quantized ones (docs/mechanisms.md)")
+    parser.add_argument("--mechanism", choices=MECHANISMS, default="obr", help="obr: statistics on full-precision activations; qir: with the outlier tokens runtime-quantized (docs/mechanisms.md)")
     parser.add_argument("--rotation", choices=("hadamard", "none"), default="hadamard", help="hadamard=fast global Hadamard; none=identity")
     parser.add_argument("--nsamples", type=int, default=128)
     parser.add_argument("--seqlen", type=int, default=2048)

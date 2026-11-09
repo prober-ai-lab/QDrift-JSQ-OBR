@@ -6,8 +6,9 @@ Dynamic activation quantization, as the evaluation runtime applies it.
 Mirrors ``benchmark.kernels.lib.int8_linear.quantize_activations``: optional
 clipping of each token at ``clip_ratio * max|x|``, then one step per token
 (or per group of ``group_size`` input features), ``step = max|x| / limit``
-with ``limit = max(|qmin|, |qmax|)``.  Compression uses it to model the
-activation noise the compressed layer will see (the qir mechanism).
+with ``limit = max(|qmin|, |qmax|)``.  Compression uses it to replay the
+compressed prefix and, on the outlier tokens, to form the layer statistics
+(the qir mechanism).
 """
 
 from __future__ import annotations
@@ -16,7 +17,12 @@ import torch
 
 from qdrift.quant.quantize import fake_quantize, qrange
 
-__all__ = ["activation_step", "fake_quantize_activations", "quantize_inputs"]
+__all__ = [
+    "activation_step",
+    "fake_quantize_activations",
+    "outlier_tokens",
+    "quantize_outlier_tokens",
+]
 
 
 def _group_width(cols: int, granularity: str, group_size: int | None) -> int:
@@ -74,8 +80,30 @@ def fake_quantize_activations(
 
 
 @torch.no_grad()
-def quantize_inputs(
+def outlier_tokens(
     inputs: torch.Tensor,
+    factor: float,
+    device: str | torch.device = "cuda",
+    chunk: int = 4096,
+) -> torch.Tensor:
+    """Rows of ``[tokens, features]`` inputs with ``max|x_t| > factor * median``.
+
+    The median is over all rows.  The mask lives on the device of ``inputs``.
+    """
+    amax = torch.cat(
+        [
+            inputs[start : start + chunk].to(device=device, dtype=torch.float32)
+            .abs()
+            .amax(dim=1)
+            for start in range(0, int(inputs.shape[0]), chunk)
+        ]
+    )
+    return (amax > factor * amax.median()).to(inputs.device)
+
+
+def quantize_outlier_tokens(
+    inputs: torch.Tensor,
+    factor: float,
     bits: int,
     grid: str,
     granularity: str = "token",
@@ -84,16 +112,19 @@ def quantize_inputs(
     device: str | torch.device = "cuda",
     chunk: int = 4096,
 ) -> torch.Tensor:
-    """``fake_quantize_activations`` over ``[tokens, features]`` inputs.
+    """``fake_quantize_activations`` on the outlier tokens, the others unchanged.
 
-    Rows are streamed through ``device`` in chunks; the result keeps the
-    device and dtype of ``inputs``.
+    Outlier tokens are those of ``outlier_tokens(inputs, factor)``.  Rows are
+    streamed through ``device`` in chunks; the result keeps the device and
+    dtype of ``inputs``.
     """
-    out = torch.empty_like(inputs)
-    for start in range(0, int(inputs.shape[0]), chunk):
-        values = inputs[start : start + chunk].to(device=device, dtype=torch.float32)
+    out = inputs.clone()
+    rows = outlier_tokens(inputs, factor, device, chunk).nonzero().squeeze(1)
+    for start in range(0, int(rows.numel()), chunk):
+        index = rows[start : start + chunk]
+        values = inputs[index].to(device=device, dtype=torch.float32)
         quantized = fake_quantize_activations(
             values, bits, grid, granularity, group_size, clip_ratio
         )
-        out[start : start + chunk].copy_(quantized.to(device=out.device, dtype=out.dtype))
+        out[index] = quantized.to(device=out.device, dtype=out.dtype)
     return out
