@@ -43,6 +43,7 @@ from qdrift.models.rotation import (
     rotate_model,
 )
 from qdrift.obr.calibrate import (
+    FullPrecisionStream,
     SequentialCalibration,
     capture_calibration_start,
     capture_inputs,
@@ -735,7 +736,7 @@ def compress(
         or recipe.weight.method == "gptq"
         or needs_pairwise_selection
     )
-    fp_inputs: dict[str, torch.Tensor] = {}
+    full_precision: FullPrecisionStream | None = None
     sequential: SequentialCalibration | None = None
     # qir: the replayed prefix uses the runtime's activation quantizer and the
     # layer statistics use it on the outlier tokens (docs/mechanisms.md).
@@ -762,18 +763,11 @@ def compress(
         )
 
     if need_hessian:
-        capture_names = (
-            sorted({group.capture for group in groups})
-            if recipe.compensation.method == "drift"
-            else []
-        )
-        calibration = capture_calibration_start(
-            model,
-            capture_names,
-            chunks,
-            main_device,
-        )
-        fp_inputs = calibration.inputs
+        calibration = capture_calibration_start(model, [], chunks, main_device)
+        if recipe.compensation.method == "drift":
+            full_precision = FullPrecisionStream(
+                model, calibration, {group.capture for group in groups}
+            )
         sequential = replay()
         if needs_pairwise_selection:
             ratios = _pairwise_sensitivity(
@@ -837,7 +831,7 @@ def compress(
                     main_device,
                 )[group.capture]
             if recipe.compensation.method == "drift":
-                fp_input = fp_inputs[group.capture]
+                fp_input = full_precision.inputs(group.capture)
                 compressed_input = calibrated
             else:
                 fp_input = calibrated

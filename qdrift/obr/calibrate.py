@@ -11,9 +11,10 @@ Layers that consume the same tensor share one input distribution:
 
 Calibration follows OBR's sequential protocol: each decoder layer is replayed
 with the weights compressed so far, so later groups and layers see compressed
-upstream activations.  DriftOBR additionally keeps the full-precision
-distribution from the initial pass.  For the qir mechanism the replay also
-quantizes the input of every compressible linear, as the runtime does.
+upstream activations.  DriftOBR additionally replays the full-precision
+model block by block (FullPrecisionStream) for the target inputs.  For the
+qir mechanism the replay also quantizes the input of every compressible
+linear, as the runtime does.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import torch
 
 __all__ = [
     "CalibrationStart",
+    "FullPrecisionStream",
     "LayerGroup",
     "SequentialCalibration",
     "capture_calibration_start",
@@ -235,11 +237,12 @@ class SequentialCalibration:
         self.kwargs = list(start.kwargs)
         self.index = 0
         self._capturing: torch.nn.Module | None = None
+        self._active = False
         self._handles = []
         if act_quant is not None:
 
             def hook(module, inputs):
-                if not inputs or module is self._capturing:
+                if not inputs or not self._active or module is self._capturing:
                     return None
                 value = inputs[0]
                 flat = value.reshape(-1, value.shape[-1])
@@ -271,6 +274,13 @@ class SequentialCalibration:
     @torch.no_grad()
     def capture(self, capture: str) -> torch.Tensor:
         """Return the current group input after replaying compressed prefixes."""
+        self._active = True
+        try:
+            return self._capture(capture)
+        finally:
+            self._active = False
+
+    def _capture(self, capture: str) -> torch.Tensor:
         target = _capture_block(capture)
         if target is None:
             raise ValueError(f"cannot map capture point {capture!r} to a block")
@@ -310,6 +320,75 @@ class SequentialCalibration:
             handle.remove()
             self._capturing = None
         return torch.cat(values, dim=0) if values else torch.empty(0)
+
+
+class FullPrecisionStream:
+    """DAC's target inputs ``x``, one decoder block at a time.
+
+    The first :meth:`inputs` call for a block runs that block once on the
+    full-precision hidden states, keeps its inputs at every capture point and
+    advances to the next block.  It must therefore come before the block is
+    compressed, which the group loop guarantees.  Only one block's inputs are
+    held, instead of every layer's (about 1.5 MB per token for LLaMA-2-7B).
+    """
+
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        start: CalibrationStart,
+        captures: Iterable[str],
+        dtype: torch.dtype = torch.float16,
+    ) -> None:
+        self.blocks = list(model.model.layers)
+        self.modules = dict(model.named_modules())
+        self.hidden = list(start.hidden)
+        self.kwargs = list(start.kwargs)
+        self.dtype = dtype
+        self.index = 0
+        self.captures: dict[int, list[str]] = {}
+        for capture in captures:
+            self.captures.setdefault(_capture_block(capture), []).append(capture)
+        self._current: dict[str, torch.Tensor] = {}
+
+    @torch.no_grad()
+    def inputs(self, capture: str) -> torch.Tensor:
+        """Full-precision input at ``capture``, a point of this or the last block."""
+        block = _capture_block(capture)
+        if block == self.index:
+            self._run_block()
+        if block != self.index - 1 or capture not in self._current:
+            raise ValueError(f"capture point {capture!r} is not in the current block")
+        return self._current[capture]
+
+    def _run_block(self) -> None:
+        names = self.captures.get(self.index, [])
+        store: dict[str, list[torch.Tensor]] = {name: [] for name in names}
+
+        def make_hook(name: str):
+            def hook(module, inputs):
+                if not inputs:
+                    return
+                value = inputs[0].detach().reshape(-1, inputs[0].shape[-1])
+                store[name].append(value.to(device="cpu", dtype=self.dtype))
+
+            return hook
+
+        handles = [
+            self.modules[name].register_forward_pre_hook(make_hook(name))
+            for name in names
+        ]
+        layer = self.blocks[self.index]
+        outputs = []
+        try:
+            for hidden, kwargs in zip(self.hidden, self.kwargs, strict=True):
+                value = layer(hidden, **kwargs)
+                outputs.append(value[0] if isinstance(value, (tuple, list)) else value)
+        finally:
+            for handle in handles:
+                handle.remove()
+        self.hidden = outputs
+        self.index += 1
+        self._current = {name: torch.cat(values, dim=0) for name, values in store.items()}
 
 
 @torch.no_grad()
