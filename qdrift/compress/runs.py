@@ -34,6 +34,8 @@ RESULTS_V2 = ROOT / "results" / "v2"
 
 # compensation.method -> calibration tag
 CALIBRATION_TAGS = {"drift": "qdrift", "obr": "seq", "none": "nocomp"}
+# The paper's calibration size (samples, tokens each); other sizes are named.
+CALIBRATION_SIZE = (32, 1024)
 
 
 def pattern_tag(recipe: CompressionRecipe) -> str:
@@ -47,9 +49,13 @@ def pattern_tag(recipe: CompressionRecipe) -> str:
 def run_name(recipe: CompressionRecipe) -> str:
     """The v2 run/checkpoint/result name of a recipe.
 
-    The late-half quantizer is named only when it is not GPTQ, the v2 default.
+    The late-half quantizer is named only when it is not GPTQ, the v2 default,
+    and the calibration size only when it is not ``CALIBRATION_SIZE``, e.g.
+    ``llama2-7b_obr_w4a4_s50_c128x2048_qdrift_seed42``.
     """
     quant = [] if recipe.weight.method == "gptq" else [recipe.weight.method]
+    size = (recipe.nsamples, recipe.seqlen)
+    calib = [] if size == CALIBRATION_SIZE else [f"c{size[0]}x{size[1]}"]
     return "_".join(
         [
             recipe.model,
@@ -57,6 +63,7 @@ def run_name(recipe: CompressionRecipe) -> str:
             f"w{recipe.weight.bits}a{recipe.activation.bits}",
             pattern_tag(recipe),
             *quant,
+            *calib,
             CALIBRATION_TAGS[recipe.compensation.method],
             f"seed{recipe.rotation.seed}",
         ]
@@ -114,6 +121,7 @@ def run_metadata(
         "pattern": pattern_tag(recipe),
         "calibration": CALIBRATION_TAGS[recipe.compensation.method],
         "quant": recipe.weight.method,
+        "calib_size": f"{recipe.nsamples}x{recipe.seqlen}",
         "seed": recipe.rotation.seed,
         "git": git_rev(),
         "layers": per_layer,

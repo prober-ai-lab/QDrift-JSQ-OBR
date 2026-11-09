@@ -6,7 +6,8 @@ Rows are (setting, sparsity); columns the four combinations of calibration
 (``seq`` / ``qdrift``) and mechanism (``obr`` / ``qir``):
 OBR = obr+seq, +DAC = obr+qdrift, +QIR = qir+seq, QDrift = qir+qdrift.
 Cells are ``WikiText-2 / C4`` perplexity; missing runs print ``-``.  Runs
-whose late half is not quantized by GPTQ get their own rows (``W4A4 rtn``).
+whose late half is not quantized by GPTQ, or whose calibration size is not
+32x1024, get their own rows (``W4A4 rtn``, ``W4A4 128x2048``).
 
     python visualize/tables/v2_table.py [results/v2]
 """
@@ -35,9 +36,11 @@ def main() -> None:
         if "ppl" not in record:
             continue
         quant = record.get("quant", "gptq")
+        size = record.get("calib_size", "32x1024")
         key = (
             f"W{record['wbits']}A{record['abits']}"
-            + ("" if quant == "gptq" else f" {quant}"),
+            + ("" if quant == "gptq" else f" {quant}")
+            + ("" if size == "32x1024" else f" {size}"),
             record["sparsity"],
             record["mechanism"],
             record["calibration"],
