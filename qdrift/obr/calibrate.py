@@ -329,7 +329,9 @@ class FullPrecisionStream:
     full-precision hidden states, keeps its inputs at every capture point and
     advances to the next block.  It must therefore come before the block is
     compressed, which the group loop guarantees.  Only one block's inputs are
-    held, instead of every layer's (about 1.5 MB per token for LLaMA-2-7B).
+    held, instead of every layer's (about 1.5 MB per token for LLaMA-2-7B),
+    and the hidden states wait on the host between blocks, so the stream
+    costs no GPU memory beyond one chunk.
     """
 
     def __init__(
@@ -341,7 +343,7 @@ class FullPrecisionStream:
     ) -> None:
         self.blocks = list(model.model.layers)
         self.modules = dict(model.named_modules())
-        self.hidden = list(start.hidden)
+        self.hidden = [hidden.to("cpu") for hidden in start.hidden]
         self.kwargs = list(start.kwargs)
         self.dtype = dtype
         self.index = 0
@@ -378,11 +380,13 @@ class FullPrecisionStream:
             for name in names
         ]
         layer = self.blocks[self.index]
+        device = next(layer.parameters()).device
         outputs = []
         try:
             for hidden, kwargs in zip(self.hidden, self.kwargs, strict=True):
-                value = layer(hidden, **kwargs)
-                outputs.append(value[0] if isinstance(value, (tuple, list)) else value)
+                value = layer(hidden.to(device), **kwargs)
+                value = value[0] if isinstance(value, (tuple, list)) else value
+                outputs.append(value.to("cpu"))
         finally:
             for handle in handles:
                 handle.remove()
