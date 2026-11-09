@@ -99,16 +99,13 @@ def test_replay_quantizes_every_linear_but_the_captured_one() -> None:
 
     replay = SequentialCalibration(model, start, act_quant, quantized)
     got = replay.capture("model.layers.1.second")
+    replay.close()
     block0, block1 = model.model.layers
     with torch.no_grad():
         h = block0.second(act_quant(block0.first(act_quant(hidden.reshape(-1, 16)))))
         expect = block1.first(act_quant(h))
-    assert torch.allclose(got, expect, atol=1e-6)
-
-    replay.close()
-    with torch.no_grad():
-        plain = model.model.layers[0](hidden)
-        assert torch.equal(plain, block0.second(block0.first(hidden)))
+        assert torch.allclose(got, expect, atol=1e-6)
+    assert all(not module._forward_pre_hooks for module in quantized)
 
 
 def test_qir_is_obr_on_quantized_inputs() -> None:
