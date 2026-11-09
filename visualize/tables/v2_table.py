@@ -5,7 +5,8 @@
 Rows are (setting, sparsity); columns the four combinations of calibration
 (``seq`` / ``qdrift``) and mechanism (``obr`` / ``qir``):
 OBR = obr+seq, +DAC = obr+qdrift, +QIR = qir+seq, QDrift = qir+qdrift.
-Cells are ``WikiText-2 / C4`` perplexity; missing runs print ``-``.
+Cells are ``WikiText-2 / C4`` perplexity; missing runs print ``-``.  Runs
+whose late half is not quantized by GPTQ get their own rows (``W4A4 rtn``).
 
     python visualize/tables/v2_table.py [results/v2]
 """
@@ -33,14 +34,16 @@ def main() -> None:
         record = json.loads(path.read_text(encoding="utf-8"))
         if "ppl" not in record:
             continue
+        quant = record.get("quant", "gptq")
         key = (
-            f"W{record['wbits']}A{record['abits']}",
+            f"W{record['wbits']}A{record['abits']}"
+            + ("" if quant == "gptq" else f" {quant}"),
             record["sparsity"],
             record["mechanism"],
             record["calibration"],
         )
         runs[key] = record["ppl"]
-    settings = sorted({(k[0], k[1]) for k in runs}, key=lambda k: (-int(k[0][1]), k[1]))
+    settings = sorted({(k[0], k[1]) for k in runs}, key=lambda k: (-int(k[0][1]), k[0], k[1]))
     print("| Setting | Sparsity | " + " | ".join(c[0] for c in COLUMNS) + " |")
     print("|---|---|" + "---|" * len(COLUMNS))
     for setting, sparsity in settings:

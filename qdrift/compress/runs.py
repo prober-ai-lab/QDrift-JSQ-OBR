@@ -45,13 +45,18 @@ def pattern_tag(recipe: CompressionRecipe) -> str:
 
 
 def run_name(recipe: CompressionRecipe) -> str:
-    """The v2 run/checkpoint/result name of a recipe."""
+    """The v2 run/checkpoint/result name of a recipe.
+
+    The late-half quantizer is named only when it is not GPTQ, the v2 default.
+    """
+    quant = [] if recipe.weight.method == "gptq" else [recipe.weight.method]
     return "_".join(
         [
             recipe.model,
             recipe.compensation.mechanism_tag(),
             f"w{recipe.weight.bits}a{recipe.activation.bits}",
             pattern_tag(recipe),
+            *quant,
             CALIBRATION_TAGS[recipe.compensation.method],
             f"seed{recipe.rotation.seed}",
         ]
@@ -108,6 +113,7 @@ def run_metadata(
         "sparsity": recipe.prune.sparsity,
         "pattern": pattern_tag(recipe),
         "calibration": CALIBRATION_TAGS[recipe.compensation.method],
+        "quant": recipe.weight.method,
         "seed": recipe.rotation.seed,
         "git": git_rev(),
         "layers": per_layer,
