@@ -20,7 +20,7 @@ from collections import defaultdict
 import style as S
 
 STEM = "qir_variants"
-VARIANTS = ("qir", "qir_diag", "qir_outlier", "qir_both")
+VARIANTS = ("qir", "qir_half", "qir_diag", "qir_outlier", "qir_both")
 
 
 def ratio_figure(rows: list[dict], model: str) -> None:

@@ -10,10 +10,12 @@ on a system ``H`` and a cross matrix ``B`` (row target ``b = B w``, i.e.
 
 ``obr``          H = E[x x^T],  B = E[x x^T]            (noise invisible)
 ``qir``          H = E[q q^T],  B = E[q x^T]            (exact, all tokens)
-``qir_diag``     the exact noise terms ``C = E[q q^T] - E[x x^T]`` and
-                 ``N = E[q x^T] - E[x x^T]`` reduced to their diagonals
+``qir_half``     the average of the two systems above   (shrinkage)
+``qir_diag``     H = E[x x^T] + diag E[n n^T],  B = E[x x^T] + diag E[n x^T]
 ``qir_outlier``  the exact terms of the outlier tokens only
-``qir_both``     outlier tokens exact, the other tokens' terms diagonal
+``qir_both``     outlier tokens exact, the other tokens' noise diagonal
+
+Every ``H`` is a sum of PSD terms.
 
 Outlier tokens are those whose ``max|x_t|`` exceeds ``--outlier-factor``
 times the median over their batch: the massive-activation tokens whose large
@@ -52,7 +54,7 @@ from qdrift.quant.activation import fake_quantize_activations
 from qdrift.quant.quantize import qrange
 
 STEM = "qir_variants"
-VARIANTS = ("obr", "qir", "qir_diag", "qir_outlier", "qir_both")
+VARIANTS = ("obr", "qir", "qir_half", "qir_diag", "qir_outlier", "qir_both")
 
 
 def parse_args() -> argparse.Namespace:
@@ -135,6 +137,8 @@ class Moments:
             setattr(self, name, getattr(self, name) / max(self.count, 1))
         self.nn = self.qq - self.qx - self.qx.t() + self.xx
         self.nn_o = self.qq_o - self.qx_o - self.qx_o.t() + self.xx_o
+        self.nx = self.qx - self.xx
+        self.nx_o = self.qx_o - self.xx_o
 
     def system(self, variant: str) -> tuple[torch.Tensor, torch.Tensor]:
         """``(H, B)`` of one variant."""
@@ -142,16 +146,17 @@ class Moments:
             return self.xx, self.xx
         if variant == "qir":
             return self.qq, self.qx
-        noise_h, noise_b = self.qq - self.xx, self.qx - self.xx
-        out_h, out_b = self.qq_o - self.xx_o, self.qx_o - self.xx_o
+        if variant == "qir_half":
+            return 0.5 * (self.xx + self.qq), 0.5 * (self.xx + self.qx)
         if variant == "qir_diag":
-            return self.xx + diag(noise_h), self.xx + diag(noise_b)
+            return self.xx + diag(self.nn), self.xx + diag(self.nx)
+        out_h, out_b = self.qq_o - self.xx_o, self.qx_o - self.xx_o
         if variant == "qir_outlier":
             return self.xx + out_h, self.xx + out_b
         if variant == "qir_both":
             return (
-                self.xx + out_h + diag(noise_h - out_h),
-                self.xx + out_b + diag(noise_b - out_b),
+                self.xx + out_h + diag(self.nn - self.nn_o),
+                self.xx + out_b + diag(self.nx - self.nx_o),
             )
         raise ValueError(variant)
 
