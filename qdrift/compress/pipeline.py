@@ -682,6 +682,8 @@ def compress(
     (qdrift.compress.runs) to the sidecar.
     """
     recipe.validate()
+    # The layer loops below rebind ``name``; keep the run name apart.
+    run = name
     pool = DevicePool(devices or [device])
     main_device = pool.main
     mask_dir = Path(mask_sink) if mask_sink is not None else None
@@ -1110,7 +1112,7 @@ def compress(
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_id = name or recipe.checkpoint_id()
+    checkpoint_id = run or recipe.checkpoint_id()
     tensor_path = out_dir / f"{checkpoint_id}.safetensors"
     config_path = out_dir / f"{checkpoint_id}.json"
     save_file(tensors, str(tensor_path))
@@ -1126,7 +1128,7 @@ def compress(
         "scale_layout": scale_layout,
     }
     config["layers"] = layer_meta
-    if name is not None:
+    if run is not None:
         config["run"] = run_metadata(recipe, layer_meta)
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     if mask_dir is not None:

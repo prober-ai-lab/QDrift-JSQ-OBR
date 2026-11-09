@@ -22,7 +22,10 @@ and on held-out C4 inputs the deployment error splits as
 all over ``E||W x||^2``.  ``gain_a = E||V n||^2 / E||W n||^2`` is how much
 the compressed weights amplify the activation noise relative to the dense
 ones, and ``energy = |V|^2 / |W|^2``.  Every quantity follows from the
-held-out moments ``E[x x^T]``, ``E[q q^T]``, ``E[q x^T]``.
+held-out moments ``E[x x^T]``, ``E[q q^T]``, ``E[q x^T]``.  ``err_cal`` is
+``err`` on the calibration moments.  Per layer, ``ls_held`` / ``ls_cal`` give
+the error of the unconstrained fit ``argmin_v E(v^T q - w^T x)^2`` (no
+pruning, no weight quantization, fitted on calibration) over that of ``W``.
 
     python minitests/noise_amplification.py --sparsities 0,0.3,0.5,0.7
 """
@@ -124,6 +127,11 @@ def form(matrix: torch.Tensor, left: torch.Tensor, right: torch.Tensor) -> float
     return float(((left @ matrix) * right).sum())
 
 
+def deploy_error(m: Moments, v: torch.Tensor, w: torch.Tensor) -> float:
+    """``sum_rows E(v^T q - w^T x)^2`` under the moments ``m``."""
+    return form(m.qq, v, v) - 2 * form(m.qx, v, w) + form(m.xx, w, w)
+
+
 @torch.no_grad()
 def measure(args, name: str, weight: torch.Tensor, cal: Moments, held: Moments):
     """Every (sparsity, mechanism) row of one layer."""
@@ -137,6 +145,13 @@ def measure(args, name: str, weight: torch.Tensor, cal: Moments, held: Moments):
     w = weight.double()
     ref = form(held.xx, w, w)
     noise_dense = form(held.nn, w, w)
+    eye = torch.eye(cal.qq.shape[0], device=cal.qq.device, dtype=cal.qq.dtype)
+    ridge = 1e-6 * torch.diagonal(cal.qq).mean()
+    v_ls = torch.linalg.solve(cal.qq + ridge * eye, cal.qx @ w.t()).t()
+    ls = {
+        "ls_held": deploy_error(held, v_ls, w) / deploy_error(held, w, w),
+        "ls_cal": deploy_error(cal, v_ls, w) / deploy_error(cal, w, w),
+    }
     out = []
     for sparsity in args.sparsities:
         for mechanism in MECHANISMS:
@@ -172,6 +187,8 @@ def measure(args, name: str, weight: torch.Tensor, cal: Moments, held: Moments):
                     "gain_a": err_a / noise_dense,
                     "energy": float(v.pow(2).sum() / w.pow(2).sum()),
                     "noise_over_signal": noise_dense / ref,
+                    "err_cal": deploy_error(cal, v, w) / form(cal.xx, w, w),
+                    **ls,
                 }
             )
     return out
@@ -231,10 +248,13 @@ def main() -> None:
             by = {(r["sparsity"], r["mechanism"]): r for r in layer_rows}
             summary = " ".join(
                 f"s{s:g}: obr {by[(s, 'obr')]['err']:.4f}"
-                f" (a {by[(s, 'obr')]['err_a']:.4f})"
+                f"/{by[(s, 'obr')]['err_cal']:.4f}"
                 f" qir {by[(s, 'qir')]['err']:.4f}"
+                f"/{by[(s, 'qir')]['err_cal']:.4f}"
                 for s in args.sparsities
             )
+            first = layer_rows[0]
+            summary += f" ls held {first['ls_held']:.3f} cal {first['ls_cal']:.3f}"
             C.log(f"  {name}: {summary} ({time.time() - start:.0f}s)")
             del weight
             torch.cuda.empty_cache()
