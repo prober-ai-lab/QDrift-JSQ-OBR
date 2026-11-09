@@ -7,7 +7,7 @@ Mirrors ``benchmark.kernels.lib.int8_linear.quantize_activations``: optional
 clipping of each token at ``clip_ratio * max|x|``, then one step per token
 (or per group of ``group_size`` input features), ``step = max|x| / limit``
 with ``limit = max(|qmin|, |qmax|)``.  Compression uses it to model the
-activation noise the compressed layer will see.
+activation noise the compressed layer will see (the qir mechanism).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import torch
 
 from qdrift.quant.quantize import fake_quantize, qrange
 
-__all__ = ["activation_noise", "activation_step", "fake_quantize_activations"]
+__all__ = ["activation_step", "fake_quantize_activations", "quantize_inputs"]
 
 
 def _group_width(cols: int, granularity: str, group_size: int | None) -> int:
@@ -74,7 +74,7 @@ def fake_quantize_activations(
 
 
 @torch.no_grad()
-def activation_noise(
+def quantize_inputs(
     inputs: torch.Tensor,
     bits: int,
     grid: str,
@@ -83,17 +83,17 @@ def activation_noise(
     clip_ratio: float = 1.0,
     device: str | torch.device = "cuda",
     chunk: int = 4096,
-) -> float:
-    """``sigma_a^2 = E[step^2] / 12``, the per-element rounding-noise variance.
+) -> torch.Tensor:
+    """``fake_quantize_activations`` over ``[tokens, features]`` inputs.
 
-    The mean runs over every token and feature of ``inputs``
-    (``[tokens, features]``, any device); rows are streamed in chunks.
+    Rows are streamed through ``device`` in chunks; the result keeps the
+    device and dtype of ``inputs``.
     """
-    total = 0.0
-    count = 0
+    out = torch.empty_like(inputs)
     for start in range(0, int(inputs.shape[0]), chunk):
         values = inputs[start : start + chunk].to(device=device, dtype=torch.float32)
-        step = activation_step(values, bits, grid, granularity, group_size, clip_ratio)
-        total += float(step.double().pow(2).sum())
-        count += step.numel()
-    return total / max(count, 1) / 12.0
+        quantized = fake_quantize_activations(
+            values, bits, grid, granularity, group_size, clip_ratio
+        )
+        out[start : start + chunk].copy_(quantized.to(device=out.device, dtype=out.dtype))
+    return out

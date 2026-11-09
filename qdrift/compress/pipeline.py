@@ -58,7 +58,7 @@ from qdrift.prune.criteria import (
 )
 from qdrift.prune.mask import mask_from_score
 from qdrift.quant.gptq import gptq_quantize, rtn_quantize
-from qdrift.quant.activation import activation_noise
+from qdrift.quant.activation import fake_quantize_activations, quantize_inputs
 from qdrift.quant.pack import pack_codes
 from qdrift.quant.quantize import dequantize, qrange
 from qdrift.quant.scale import compute_scale
@@ -223,7 +223,6 @@ def _quantize_layer(
     hessian_raw: torch.Tensor | None,
     hessian_diff: torch.Tensor | None,
     drift_weight: torch.Tensor | None = None,
-    act_noise: float | None = None,
 ) -> LayerResult:
     rows, cols = weight.shape
     # Scale is computed independently for this layer from the pre-mask rotated
@@ -291,10 +290,7 @@ def _quantize_layer(
     else:
         retained_scale = None
         quant_scale = full_scale.scale.gather(1, keep)
-    mechanism = get_mechanism(
-        recipe.compensation.mechanism, recipe.compensation.noise_scale
-    )
-    stats_hessian = hessian_fp if mechanism.needs_hessian else None
+    mechanism = get_mechanism(recipe.compensation.mechanism)
     mean_diag = float(diag.mean()) if hessian_fp is not None else 0.0
     hessian_fp = None
     score = None
@@ -315,15 +311,15 @@ def _quantize_layer(
             raise ValueError("compensation requires calibration inputs")
         if recipe.compensation.method == "drift" and hessian_diff is None:
             raise ValueError("DriftOBR requires dual-path calibration inputs")
+        # hessian_diff is set whenever the solve inputs differ from the
+        # target inputs: QDrift calibration and/or quantized inputs (qir).
         stats = LayerStats(
-            hessian=stats_hessian,
             mean_diag=mean_diag,
             system=hessian_system,
             raw=hessian_raw,
-            diff=hessian_diff if recipe.compensation.method == "drift" else None,
+            diff=hessian_diff,
             drift_weight=drift_weight,
             damping=recipe.compensation.damping,
-            act_noise=act_noise,
         )
         # Joint/sparse-quantized checkpoints compensate the quantization error;
         # the fp16 sparse baseline bypasses this function entirely.
@@ -342,7 +338,6 @@ def _quantize_layer(
         del stats, compensation
     else:
         retained2 = weight_rot.gather(1, keep)
-    stats_hessian = None
 
     tensors: dict[str, torch.Tensor] = {}
     if recipe.weight.method == "rtn":
@@ -483,7 +478,6 @@ def _process_full_layer(
     compressed_input: torch.Tensor | None,
     device: str,
     need_hessian: bool,
-    act_noise: float | None = None,
 ) -> LayerResult:
     torch.cuda.set_device(device)
     local_weight = weight.detach().float().to(device)
@@ -527,7 +521,6 @@ def _process_full_layer(
         hessian_system,
         hessian_raw,
         hessian_diff,
-        act_noise=act_noise,
     )
     del local_weight, local_fp, local_hat
     torch.cuda.empty_cache()
@@ -545,7 +538,6 @@ def _process_row_slice(
     hessian_diff: torch.Tensor | None,
     drift_weight: torch.Tensor | None,
     device: str,
-    act_noise: float | None = None,
 ) -> LayerResult:
     torch.cuda.set_device(device)
     local_weight = weight_rows.detach().float().to(device)
@@ -568,7 +560,6 @@ def _process_row_slice(
         local_raw,
         local_diff,
         local_drift,
-        act_noise=act_noise,
     )
     del (
         local_weight,
@@ -744,6 +735,32 @@ def compress(
     )
     fp_inputs: dict[str, torch.Tensor] = {}
     sequential: SequentialCalibration | None = None
+    # qir: the layer statistics and the replayed prefix use the runtime's
+    # activation quantizer (docs/mechanisms.md).
+    quantize_acts = (
+        recipe.compensation.method != "none"
+        and get_mechanism(recipe.compensation.mechanism).quantizes_inputs
+    )
+    act = recipe.activation
+    act_args = (
+        act.bits,
+        act.grid,
+        act.granularity.kind,
+        act.granularity.group_size,
+        act.clip_ratio,
+    )
+
+    def act_quant(values: torch.Tensor) -> torch.Tensor:
+        return fake_quantize_activations(values, *act_args)
+
+    def replay() -> SequentialCalibration:
+        return SequentialCalibration(
+            model,
+            calibration,
+            act_quant if quantize_acts else None,
+            layers.values(),
+        )
+
     if need_hessian:
         capture_names = (
             sorted({group.capture for group in groups})
@@ -757,7 +774,7 @@ def compress(
             main_device,
         )
         fp_inputs = calibration.inputs
-        sequential = SequentialCalibration(model, calibration)
+        sequential = replay()
         if needs_pairwise_selection:
             ratios = _pairwise_sensitivity(
                 model,
@@ -790,7 +807,8 @@ def compress(
                 flush=True,
             )
             # Re-run calibration from the start; the sensitivity pass only read inputs.
-            sequential = SequentialCalibration(model, calibration)
+            sequential.close()
+            sequential = replay()
 
     qparams = qrange(recipe.weight.bits, recipe.weight.grid)
     tensors: dict[str, torch.Tensor] = {}
@@ -806,14 +824,9 @@ def compress(
         else f"signed_int{recipe.weight.bits}"
     )
 
-    needs_act_noise = (
-        recipe.compensation.method != "none"
-        and get_mechanism(recipe.compensation.mechanism).needs_act_noise
-    )
     for group in groups:
         fp_input = None
         compressed_input = None
-        act_noise = None
         if need_hessian:
             calibrated = sequential.capture(group.capture)
             if calibrated.numel() == 0:
@@ -828,16 +841,10 @@ def compress(
                 compressed_input = calibrated
             else:
                 fp_input = calibrated
-            if needs_act_noise:
-                # sigma_a^2 is measured on the inputs the layer calibrates on.
-                act_noise = activation_noise(
-                    calibrated,
-                    recipe.activation.bits,
-                    recipe.activation.grid,
-                    recipe.activation.granularity.kind,
-                    recipe.activation.granularity.group_size,
-                    recipe.activation.clip_ratio,
-                    device=main_device,
+            if quantize_acts:
+                # Solve on Q_a(z), fit the output on z (or x under QDrift).
+                compressed_input = quantize_inputs(
+                    calibrated, *act_args, device=main_device
                 )
 
         results: list[LayerResult] = []
@@ -888,7 +895,6 @@ def compress(
                                 if local_drift is not None
                                 else None,
                                 dev,
-                                act_noise,
                             )
                         )
                     )
@@ -942,7 +948,6 @@ def compress(
                             compressed_input,
                             dev,
                             need_hessian,
-                            act_noise,
                         )
                     )
                 )
@@ -1020,7 +1025,6 @@ def compress(
                         if local_drift is not None
                         else None,
                         dev,
-                        act_noise,
                     )
                 )
                 for start, end in splits
@@ -1071,7 +1075,6 @@ def compress(
                     compressed_input,
                     main_device,
                     need_hessian,
-                    act_noise,
                 )
                 layers[name].weight.data = result.new_weight.to(
                     device=main_device,
@@ -1102,6 +1105,8 @@ def compress(
                 )
         del fp_input, compressed_input
         torch.cuda.empty_cache()
+    if sequential is not None:
+        sequential.close()
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

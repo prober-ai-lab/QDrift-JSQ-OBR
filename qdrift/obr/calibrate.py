@@ -12,11 +12,13 @@ Layers that consume the same tensor share one input distribution:
 Calibration follows OBR's sequential protocol: each decoder layer is replayed
 with the weights compressed so far, so later groups and layers see compressed
 upstream activations.  DriftOBR additionally keeps the full-precision
-distribution from the initial pass.
+distribution from the initial pass.  For the qir mechanism the replay also
+quantizes the input of every compressible linear, as the runtime does.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import torch
@@ -211,18 +213,48 @@ def capture_calibration_start(
 
 
 class SequentialCalibration:
-    """Replay decoder layers with the current, partially-compressed weights."""
+    """Replay decoder layers with the current, partially-compressed weights.
+
+    With ``act_quant`` every module in ``quantized`` sees its input through
+    ``act_quant`` (``[tokens, features] -> same``) during the replay, except
+    the module being captured, whose raw input is returned.  The hooks run
+    after the online Hadamards, as the runtime's quantizer does; call
+    :meth:`close` to remove them.
+    """
 
     def __init__(
         self,
         model: torch.nn.Module,
         start: CalibrationStart,
+        act_quant: Callable[[torch.Tensor], torch.Tensor] | None = None,
+        quantized: Iterable[torch.nn.Module] = (),
     ) -> None:
         self.blocks = list(model.model.layers)
         self.modules = dict(model.named_modules())
         self.hidden = list(start.hidden)
         self.kwargs = list(start.kwargs)
         self.index = 0
+        self._capturing: torch.nn.Module | None = None
+        self._handles = []
+        if act_quant is not None:
+
+            def hook(module, inputs):
+                if not inputs or module is self._capturing:
+                    return None
+                value = inputs[0]
+                flat = value.reshape(-1, value.shape[-1])
+                work = act_quant(flat).reshape(value.shape).to(value.dtype)
+                return (work,) + inputs[1:]
+
+            self._handles = [
+                module.register_forward_pre_hook(hook) for module in quantized
+            ]
+
+    def close(self) -> None:
+        """Remove the activation-quantization hooks."""
+        for handle in self._handles:
+            handle.remove()
+        self._handles = []
 
     @torch.no_grad()
     def _advance(self) -> None:
@@ -270,11 +302,13 @@ class SequentialCalibration:
             values.append(value.to(device="cpu", dtype=torch.float32))
 
         handle = module.register_forward_pre_hook(hook)
+        self._capturing = module
         try:
             for hidden, kwargs in zip(self.hidden, self.kwargs, strict=True):
                 layer(hidden, **kwargs)
         finally:
             handle.remove()
+            self._capturing = None
         return torch.cat(values, dim=0) if values else torch.empty(0)
 
 

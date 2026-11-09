@@ -23,32 +23,23 @@ class LayerStats:
     """Calibration statistics of one layer, in the rotated basis.
 
     Attributes:
-        hessian: ``H = E[z z^T]`` over the layer's calibration inputs ``z``,
-            undamped.  With QDrift calibration ``z`` is the compressed-path
-            input (the prefix already compressed); otherwise it is the
-            sequentially propagated input.  Only kept for mechanisms with
-            ``needs_hessian``; None otherwise.
-        mean_diag: ``mean(diag H)``.
+        mean_diag: ``mean(diag H)``, ``H = E[z z^T]`` over the layer's
+            calibration inputs ``z`` (see docs/mechanisms.md).
         system: OBR's damped system ``H + damping * mean(diag H) I``.
         raw: the matrix OBR uses for cross terms; the pipeline passes
             ``system`` (off-diagonal blocks are those of ``H``).
-        diff: QDrift's drift matrix ``E[(z - x) z^T]``, ``x`` the
-            full-precision input; None without QDrift.
+        diff: the drift matrix ``E[(z - x) z^T]``, ``x`` the input the
+            target output is computed on; None when ``z = x``.
         drift_weight: ``w @ diff`` for these rows when precomputed, else None.
         damping: OBR's relative damping.
-        act_noise: ``sigma_a^2``, the per-element variance of the
-            evaluation-time activation quantization noise, measured on the
-            same inputs ``z``; None when the mechanism does not need it.
     """
 
-    hessian: torch.Tensor | None
     mean_diag: float
     system: torch.Tensor
     raw: torch.Tensor
     diff: torch.Tensor | None = None
     drift_weight: torch.Tensor | None = None
     damping: float = 0.01
-    act_noise: float | None = None
 
 
 @dataclass
@@ -71,9 +62,9 @@ class Mechanism(ABC):
     """A pruning + quantization compensation mechanism."""
 
     name: str = ""
-    # Whether compensate() reads stats.hessian / stats.act_noise.
-    needs_hessian: bool = False
-    needs_act_noise: bool = False
+    # Whether calibration hands the layer its inputs as the runtime
+    # activation quantizer sees them (z = Q_a(.)) instead of in full precision.
+    quantizes_inputs: bool = False
 
     @abstractmethod
     def compensate(

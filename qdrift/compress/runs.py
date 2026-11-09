@@ -92,9 +92,9 @@ def run_metadata(
     """Fields every v2 checkpoint and result JSON carries.
 
     ``layers`` is the checkpoint's per-layer metadata; its mechanism fields
-    (``act_noise``, ``lambda``, ``floor``, ...) are copied per layer.
+    (``mechanism``, ``lambda``, ``damping``) are copied per layer.
     """
-    keys = ("mechanism", "act_noise", "noise_scale", "lambda", "damping", "floor")
+    keys = ("mechanism", "lambda", "damping")
     per_layer = {
         name: {key: meta[key] for key in keys if key in meta}
         for name, meta in (layers or {}).items()
@@ -111,6 +111,5 @@ def run_metadata(
         "seed": recipe.rotation.seed,
         "git": git_rev(),
         "layers": per_layer,
-        "floor_layers": sum(1 for meta in per_layer.values() if meta.get("floor")),
         "config": recipe.to_dict(),
     }

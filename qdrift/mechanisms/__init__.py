@@ -9,7 +9,7 @@ from __future__ import annotations
 from qdrift.compress.recipe import MECHANISMS
 from qdrift.mechanisms.base import Compensation, LayerStats, Mechanism
 from qdrift.mechanisms.obr import OBRMechanism
-from qdrift.mechanisms.wiener import WienerMechanism
+from qdrift.mechanisms.qir import QIRMechanism
 
 
 __all__ = [
@@ -18,15 +18,15 @@ __all__ = [
     "LayerStats",
     "Mechanism",
     "OBRMechanism",
-    "WienerMechanism",
+    "QIRMechanism",
     "get_mechanism",
 ]
 
 
-def get_mechanism(name: str, noise_scale: float = 1.0) -> Mechanism:
+def get_mechanism(name: str) -> Mechanism:
     """Instantiate a mechanism by its CLI name."""
     if name == "obr":
         return OBRMechanism()
-    if name == "wiener":
-        return WienerMechanism(noise_scale)
+    if name == "qir":
+        return QIRMechanism()
     raise ValueError(f"unknown mechanism {name}; use one of {MECHANISMS}")
