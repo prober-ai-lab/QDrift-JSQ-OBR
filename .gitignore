@@ -78,6 +78,3 @@ checkpoints/*
 
 # Local Documents
 docs
-
-# Archived results are kept locally, never committed.
-archive/*/results/
