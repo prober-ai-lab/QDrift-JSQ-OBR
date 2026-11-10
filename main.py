@@ -14,6 +14,7 @@ from benchmark.eval.evaluation import (
     ZEROSHOT_TASKS,
     ppl_eval,
     run_benchmark,
+    zeroshot_eval,
 )
 from qdrift.compress.pipeline import compress, compress_regimes, parse_devices
 from qdrift.compress.recipe import (
@@ -190,6 +191,9 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--ppl", action=argparse.BooleanOptionalAction, default=True, help="evaluate WikiText-2 (full test) and C4 PPL at 2048 tokens")
     parser.add_argument("--c4-chunks", type=int, default=256)
     parser.add_argument("--eval-batch-size", type=int, default=2)
+    parser.add_argument("--zeroshot", action=argparse.BooleanOptionalAction, default=False, help="evaluate the lm-eval zero-shot tasks")
+    parser.add_argument("--lm-eval-tasks", default=",".join(ZEROSHOT_TASKS))
+    parser.add_argument("--drop-checkpoint", action="store_true", help="delete the checkpoint once it is evaluated")
     # fmt: on
 
 
@@ -226,7 +230,7 @@ def _run(args: argparse.Namespace, recipe: CompressionRecipe) -> int:
         "checkpoint": str(checkpoint),
         "compress_s": time.perf_counter() - start,
     }
-    if args.ppl:
+    if args.ppl or args.zeroshot:
         model, tokenizer, _ = load_runtime_model(
             checkpoint,
             "joint",
@@ -234,6 +238,7 @@ def _run(args: argparse.Namespace, recipe: CompressionRecipe) -> int:
             device=devices[0],
             allow_sparse=False,
         )
+    if args.ppl:
         record["ppl"] = {}
         for dataset in ("wikitext2", "c4"):
             chunks = get_loaders(
@@ -249,6 +254,13 @@ def _run(args: argparse.Namespace, recipe: CompressionRecipe) -> int:
             )
             record["ppl"][dataset] = value[0] if isinstance(value, tuple) else value
             print(f"{name} ppl {dataset} = {record['ppl'][dataset]:.4f}", flush=True)
+    if args.zeroshot:
+        tasks = tuple(task for task in args.lm_eval_tasks.split(",") if task)
+        record["zeroshot"] = zeroshot_eval(model, tokenizer, tasks, batch_size=16)
+        print(f"{name} zeroshot avg = {record['zeroshot']['avg']:.2f}", flush=True)
+    if args.drop_checkpoint:
+        checkpoint.unlink()
+        record["checkpoint"] = None
     record["total_s"] = time.perf_counter() - start
     result.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     print(f"saved {result}", flush=True)
