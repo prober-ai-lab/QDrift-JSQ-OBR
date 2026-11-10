@@ -49,6 +49,7 @@ from qdrift.obr.calibrate import (
     capture_inputs,
     layer_groups,
 )
+from qdrift.obr.curvature import collect_output_curvature, normalize_curvature
 from qdrift.obr.drift import drift_weight, shrink_drift_weight
 from qdrift.obr.obr import compensate_pruning_error, split_mask
 from qdrift.prune.criteria import (
@@ -224,6 +225,7 @@ def _quantize_layer(
     hessian_raw: torch.Tensor | None,
     hessian_diff: torch.Tensor | None,
     drift_weight: torch.Tensor | None = None,
+    curvature: torch.Tensor | None = None,
 ) -> LayerResult:
     rows, cols = weight.shape
     # Scale is computed independently for this layer from the pre-mask rotated
@@ -323,6 +325,15 @@ def _quantize_layer(
             diff=hessian_diff,
             drift_weight=drift_weight,
             damping=recipe.compensation.damping,
+            curvature=(
+                normalize_curvature(
+                    curvature.to(device=weight.device, dtype=torch.float32),
+                    recipe.compensation.curvature_damping,
+                )
+                if curvature is not None
+                else None
+            ),
+            curvature_iters=recipe.compensation.curvature_iters,
         )
         # Joint/sparse-quantized checkpoints compensate the quantization error;
         # the fp16 sparse baseline bypasses this function entirely.
@@ -481,6 +492,7 @@ def _process_full_layer(
     compressed_input: torch.Tensor | None,
     device: str,
     need_hessian: bool,
+    curvature: torch.Tensor | None = None,
 ) -> LayerResult:
     torch.cuda.set_device(device)
     local_weight = weight.detach().float().to(device)
@@ -530,6 +542,7 @@ def _process_full_layer(
         hessian_raw,
         hessian_diff,
         local_drift,
+        curvature,
     )
     del local_weight, local_fp, local_hat
     torch.cuda.empty_cache()
@@ -757,6 +770,13 @@ def compress(
     )
     chunks = _batch_chunks(chunks, recipe.batch_size)
     groups = layer_groups(model, layers)
+    curvature: dict[str, torch.Tensor] = {}
+    if recipe.compensation.curvature != "none":
+        # The output curvature is a property of the dense model: collect it
+        # before any layer is compressed.
+        began = time.time()
+        curvature = collect_output_curvature(model, chunks, layers, main_device)
+        print(f"output curvature: {len(curvature)} layers ({time.time() - began:.0f}s)", flush=True)
 
     needs_pairwise_selection = (
         recipe.prune.structure in ("2:4", "4:8")
@@ -878,8 +898,11 @@ def compress(
 
         results: list[LayerResult] = []
         names = list(group.names)
+        # The curvature couples every row of a layer, so it never splits rows.
+        row_slices = recipe.compensation.curvature == "none"
         if (
-            pool.size > 1
+            row_slices
+            and pool.size > 1
             and len(names) > 1
             and recipe.weight.granularity.kind != "tensor"
         ):
@@ -977,6 +1000,7 @@ def compress(
                             compressed_input,
                             dev,
                             need_hessian,
+                            curvature.get(name),
                         )
                     )
                 )
@@ -1010,7 +1034,8 @@ def compress(
                     flush=True,
                 )
         elif (
-            pool.size > 1
+            row_slices
+            and pool.size > 1
             and len(names) == 1
             and recipe.weight.granularity.kind != "tensor"
             and layers[names[0]].in_features <= 4096
@@ -1106,6 +1131,7 @@ def compress(
                     compressed_input,
                     main_device,
                     need_hessian,
+                    curvature.pop(name, None),
                 )
                 layers[name].weight.data = result.new_weight.to(
                     device=main_device,

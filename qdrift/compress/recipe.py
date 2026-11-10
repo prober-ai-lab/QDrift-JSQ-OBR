@@ -28,6 +28,7 @@ SPARSITY_VALUES: tuple[float, ...] = tuple(round(index / 10, 1) for index in ran
 PRUNING_CRITERIA: tuple[str, ...] = ("magnitude", "wanda", "sparsegpt")
 MECHANISMS: tuple[str, ...] = ("obr", "qir")
 DRIFT_SHRINK: tuple[str, ...] = ("none", "layer", "row")
+CURVATURE: tuple[str, ...] = ("none", "fisher")
 
 
 def _slug(name: str) -> str:
@@ -308,6 +309,12 @@ class CompensationSpec:
     ``drift_shrink`` shrinks DAC's drift term toward OBR by its sampling noise
     across calibration sequences: ``layer`` (one factor) or ``row`` (one per
     output row); ``none`` keeps plain DAC.
+    ``curvature`` couples the output rows of the compensation through the
+    output curvature ``G`` (qdrift.obr.curvature): ``fisher`` uses the
+    empirical Fisher of the calibration NLL at each layer output, damped by
+    ``curvature_damping`` (relative to its mean diagonal) and solved with
+    ``curvature_iters`` conjugate-gradient steps per stage; ``none`` keeps
+    OBR's row-wise compensation.
     """
 
     method: str = "obr"
@@ -316,6 +323,9 @@ class CompensationSpec:
     mechanism: str = "obr"
     outlier_factor: float = 8.0
     drift_shrink: str = "none"
+    curvature: str = "none"
+    curvature_damping: float = 0.1
+    curvature_iters: int = 256
 
     def validate(self) -> None:
         if self.method not in ("none", "obr", "drift"):
@@ -332,6 +342,14 @@ class CompensationSpec:
             raise ValueError(f"unknown drift shrinkage {self.drift_shrink}")
         if self.drift_shrink != "none" and self.method != "drift":
             raise ValueError("drift shrinkage needs --comp drift")
+        if self.curvature not in CURVATURE:
+            raise ValueError(f"unknown output curvature {self.curvature}")
+        if self.curvature != "none" and self.method == "none":
+            raise ValueError("output curvature needs a compensation method")
+        if self.curvature_damping <= 0.0:
+            raise ValueError("curvature damping must be positive")
+        if self.curvature_iters < 0:
+            raise ValueError("curvature iterations must be non-negative")
 
     def mechanism_tag(self) -> str:
         """``obr``, ``qir``, or ``qir-k{kappa}`` for a non-default threshold."""
@@ -353,6 +371,10 @@ class CompensationSpec:
             data["outlier_factor"] = self.outlier_factor
         if self.drift_shrink != "none":
             data["drift_shrink"] = self.drift_shrink
+        if self.curvature != "none":
+            data["curvature"] = self.curvature
+            data["curvature_damping"] = self.curvature_damping
+            data["curvature_iters"] = self.curvature_iters
         return data
 
     @classmethod
@@ -364,6 +386,9 @@ class CompensationSpec:
             mechanism=str(data.get("mechanism", "obr")),
             outlier_factor=float(data.get("outlier_factor", 8.0)),
             drift_shrink=str(data.get("drift_shrink", "none")),
+            curvature=str(data.get("curvature", "none")),
+            curvature_damping=float(data.get("curvature_damping", 0.1)),
+            curvature_iters=int(data.get("curvature_iters", 256)),
         )
 
 

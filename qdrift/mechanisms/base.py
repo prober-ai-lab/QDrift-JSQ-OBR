@@ -32,6 +32,10 @@ class LayerStats:
             target output is computed on; None when ``z = x``.
         drift_weight: ``w @ diff`` for these rows when precomputed, else None.
         damping: OBR's relative damping.
+        curvature: the normalized, damped output curvature ``G`` of the
+            layer (qdrift.obr.curvature), whole layer only; None keeps the
+            row-wise compensation.
+        curvature_iters: conjugate-gradient steps per stage for ``curvature``.
     """
 
     mean_diag: float
@@ -40,6 +44,8 @@ class LayerStats:
     diff: torch.Tensor | None = None
     drift_weight: torch.Tensor | None = None
     damping: float = 0.01
+    curvature: torch.Tensor | None = None
+    curvature_iters: int = 0
 
 
 @dataclass

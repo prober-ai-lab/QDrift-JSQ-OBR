@@ -47,10 +47,20 @@ def pattern_tag(recipe: CompressionRecipe) -> str:
 
 
 def calibration_tag(recipe: CompressionRecipe) -> str:
-    """``qdrift`` / ``seq`` / ``nocomp``, with DAC's drift shrinkage appended."""
-    tag = CALIBRATION_TAGS[recipe.compensation.method]
-    shrink = recipe.compensation.drift_shrink
-    return tag if shrink == "none" else f"{tag}-js{shrink}"
+    """``qdrift`` / ``seq`` / ``nocomp``, with DAC's drift shrinkage and the
+    output curvature appended (``-fisher``, plus its damping and iterations
+    when they are not the defaults)."""
+    comp = recipe.compensation
+    tag = CALIBRATION_TAGS[comp.method]
+    if comp.drift_shrink != "none":
+        tag = f"{tag}-js{comp.drift_shrink}"
+    if comp.curvature != "none":
+        tag = f"{tag}-{comp.curvature}"
+        if comp.curvature_damping != 0.1:
+            tag = f"{tag}-g{comp.curvature_damping:g}"
+        if comp.curvature_iters != 256:
+            tag = f"{tag}-i{comp.curvature_iters}"
+    return tag
 
 
 def run_name(recipe: CompressionRecipe) -> str:
