@@ -68,3 +68,30 @@ def test_shrinkage_is_named_and_round_trips() -> None:
     assert CompensationSpec.from_dict(spec.to_dict()) == spec
     with pytest.raises(ValueError, match="needs --comp drift"):
         CompensationSpec(method="obr", drift_shrink="row").validate()
+
+
+def test_single_device_path_shrinks(monkeypatch) -> None:
+    """``_process_full_layer`` hands the shrunk drift term to the solver."""
+    import qdrift.compress.pipeline as pipeline
+
+    generator = torch.Generator().manual_seed(2)
+    seqlen, cols, count = 32, 64, 64
+    z = torch.randn(count * seqlen, cols, generator=generator)
+    x = z + torch.randn(count * seqlen, cols, generator=generator)
+    weight = torch.randn(8, cols, generator=generator)
+    seen = {}
+    monkeypatch.setattr(pipeline.torch.cuda, "set_device", lambda device: None)
+    monkeypatch.setattr(
+        pipeline, "_quantize_layer", lambda *args: seen.setdefault("drift", args[9])
+    )
+    for mode in ("none", "row"):
+        recipe = CompressionRecipe(
+            compensation=CompensationSpec(method="drift", drift_shrink=mode),
+            seqlen=seqlen,
+        )
+        seen.clear()
+        pipeline._process_full_layer(recipe, None, "layer", weight, x, z, "cpu", True)
+        expected = _shift(weight, x, z)
+        if mode == "row":
+            expected, _ = shrink_drift_weight(expected, weight, x, z, seqlen, "row")
+        assert torch.allclose(seen["drift"], expected, atol=1e-4)

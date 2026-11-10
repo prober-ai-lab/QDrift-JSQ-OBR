@@ -514,6 +514,11 @@ def _process_full_layer(
             hessian_raw = hessian_system
     else:
         hessian_fp = hessian_system = hessian_raw = hessian_diff = None
+    local_drift = (
+        _drift_term(recipe, name, local_weight, hessian_diff, fp_input, compressed_input)
+        if hessian_diff is not None
+        else None
+    )
     result = _quantize_layer(
         recipe,
         qparams,
@@ -524,6 +529,7 @@ def _process_full_layer(
         hessian_system,
         hessian_raw,
         hessian_diff,
+        local_drift,
     )
     del local_weight, local_fp, local_hat
     torch.cuda.empty_cache()
