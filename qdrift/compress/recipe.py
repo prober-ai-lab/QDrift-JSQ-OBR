@@ -303,12 +303,14 @@ class CompensationSpec:
     statistics are formed (see qdrift.mechanisms): ``obr`` on the
     full-precision activations of the compressed path, ``qir`` with the
     outlier tokens quantized as the runtime quantizes them.
+    ``outlier_factor`` is QIR's threshold kappa (0 quantizes every token).
     """
 
     method: str = "obr"
     alpha: float = 0.5
     damping: float = 0.01
     mechanism: str = "obr"
+    outlier_factor: float = 8.0
 
     def validate(self) -> None:
         if self.method not in ("none", "obr", "drift"):
@@ -319,9 +321,13 @@ class CompensationSpec:
             raise ValueError("damping must be non-negative")
         if self.mechanism not in MECHANISMS:
             raise ValueError(f"unknown mechanism {self.mechanism}")
+        if self.outlier_factor < 0.0:
+            raise ValueError("outlier factor must be non-negative")
 
     def mechanism_tag(self) -> str:
-        """``obr`` or ``qir``."""
+        """``obr``, ``qir``, or ``qir-k{kappa}`` for a non-default threshold."""
+        if self.mechanism == "qir" and self.outlier_factor != 8.0:
+            return f"qir-k{self.outlier_factor:g}"
         return self.mechanism
 
     def to_dict(self) -> dict[str, Any]:
@@ -334,6 +340,8 @@ class CompensationSpec:
         # them the ids of existing checkpoints, do not change.
         if self.mechanism != "obr":
             data["mechanism"] = self.mechanism
+        if self.mechanism == "qir" and self.outlier_factor != 8.0:
+            data["outlier_factor"] = self.outlier_factor
         return data
 
     @classmethod
@@ -343,6 +351,7 @@ class CompensationSpec:
             alpha=float(data.get("alpha", 0.5)),
             damping=float(data.get("damping", 0.01)),
             mechanism=str(data.get("mechanism", "obr")),
+            outlier_factor=float(data.get("outlier_factor", 8.0)),
         )
 
 

@@ -118,6 +118,16 @@ def test_qir_is_obr_on_outlier_quantized_inputs() -> None:
     mechanism = get_mechanism("qir")
     assert mechanism.quantizes_inputs and mechanism.outlier_factor == 8.0
     assert not get_mechanism("obr").quantizes_inputs
+    assert get_mechanism("qir", 0.0).outlier_factor == 0.0
+
+
+def test_outlier_factor_is_named_only_when_not_default() -> None:
+    default = CompensationSpec(mechanism="qir")
+    assert default.mechanism_tag() == "qir"
+    assert "outlier_factor" not in default.to_dict()
+    every_token = CompensationSpec(mechanism="qir", outlier_factor=0.0)
+    assert every_token.mechanism_tag() == "qir-k0"
+    assert CompensationSpec.from_dict(every_token.to_dict()) == every_token
 
 
 def test_qir_needs_quantized_activations() -> None:

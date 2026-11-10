@@ -74,6 +74,7 @@ def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--quant", choices=("rtn", "gptq"), default="gptq")
     parser.add_argument("--comp", choices=("none", "obr", "drift"), default="obr", help="calibration objective: obr=symmetric, drift=QDrift asymmetric")
     parser.add_argument("--mechanism", choices=MECHANISMS, default="obr", help="obr: statistics on full-precision activations; qir: with the outlier tokens runtime-quantized (docs/mechanisms.md)")
+    parser.add_argument("--outlier-factor", type=float, default=8.0, help="qir: quantize tokens whose max|z_t| exceeds this times the median (0 = all tokens)")
     parser.add_argument("--rotation", choices=("hadamard", "none"), default="hadamard", help="hadamard=fast global Hadamard; none=identity")
     parser.add_argument("--nsamples", type=int, default=128)
     parser.add_argument("--seqlen", type=int, default=2048)
@@ -153,6 +154,7 @@ def _build_recipe(args: argparse.Namespace) -> CompressionRecipe:
             method=args.comp,
             damping=args.damping,
             mechanism=args.mechanism,
+            outlier_factor=args.outlier_factor,
         ),
         nsamples=args.nsamples,
         seqlen=args.seqlen,

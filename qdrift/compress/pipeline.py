@@ -291,7 +291,9 @@ def _quantize_layer(
     else:
         retained_scale = None
         quant_scale = full_scale.scale.gather(1, keep)
-    mechanism = get_mechanism(recipe.compensation.mechanism)
+    mechanism = get_mechanism(
+        recipe.compensation.mechanism, recipe.compensation.outlier_factor
+    )
     mean_diag = float(diag.mean()) if hessian_fp is not None else 0.0
     hessian_fp = None
     score = None
@@ -740,7 +742,9 @@ def compress(
     sequential: SequentialCalibration | None = None
     # qir: the replayed prefix uses the runtime's activation quantizer and the
     # layer statistics use it on the outlier tokens (docs/mechanisms.md).
-    mechanism = get_mechanism(recipe.compensation.mechanism)
+    mechanism = get_mechanism(
+        recipe.compensation.mechanism, recipe.compensation.outlier_factor
+    )
     quantize_acts = recipe.compensation.method != "none" and mechanism.quantizes_inputs
     act = recipe.activation
     act_args = (

@@ -23,10 +23,13 @@ __all__ = [
 ]
 
 
-def get_mechanism(name: str) -> Mechanism:
-    """Instantiate a mechanism by its CLI name."""
+def get_mechanism(name: str, outlier_factor: float | None = None) -> Mechanism:
+    """Instantiate a mechanism by its CLI name (``outlier_factor``: QIR's kappa)."""
     if name == "obr":
         return OBRMechanism()
     if name == "qir":
-        return QIRMechanism()
+        mechanism = QIRMechanism()
+        if outlier_factor is not None:
+            mechanism.outlier_factor = outlier_factor
+        return mechanism
     raise ValueError(f"unknown mechanism {name}; use one of {MECHANISMS}")
