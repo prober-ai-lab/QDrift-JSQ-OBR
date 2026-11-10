@@ -18,6 +18,7 @@ from benchmark.eval.evaluation import (
 )
 from qdrift.compress.pipeline import compress, compress_regimes, parse_devices
 from qdrift.compress.recipe import (
+    DRIFT_SHRINK,
     MECHANISMS,
     PRUNING_CRITERIA,
     ActivationQuantSpec,
@@ -76,6 +77,7 @@ def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--comp", choices=("none", "obr", "drift"), default="obr", help="calibration objective: obr=symmetric, drift=QDrift asymmetric")
     parser.add_argument("--mechanism", choices=MECHANISMS, default="obr", help="obr: statistics on full-precision activations; qir: with the outlier tokens runtime-quantized (docs/mechanisms.md)")
     parser.add_argument("--outlier-factor", type=float, default=8.0, help="qir: quantize tokens whose max|z_t| exceeds this times the median (0 = all tokens)")
+    parser.add_argument("--drift-shrink", choices=DRIFT_SHRINK, default="none", help="drift: shrink DAC's drift term toward OBR by its noise across calibration sequences, per layer or per output row")
     parser.add_argument("--rotation", choices=("hadamard", "none"), default="hadamard", help="hadamard=fast global Hadamard; none=identity")
     parser.add_argument("--nsamples", type=int, default=128)
     parser.add_argument("--seqlen", type=int, default=2048)
@@ -156,6 +158,7 @@ def _build_recipe(args: argparse.Namespace) -> CompressionRecipe:
             damping=args.damping,
             mechanism=args.mechanism,
             outlier_factor=args.outlier_factor,
+            drift_shrink=args.drift_shrink,
         ),
         nsamples=args.nsamples,
         seqlen=args.seqlen,

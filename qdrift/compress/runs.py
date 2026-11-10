@@ -46,6 +46,13 @@ def pattern_tag(recipe: CompressionRecipe) -> str:
     return f"s{round(recipe.prune.sparsity * 100)}"
 
 
+def calibration_tag(recipe: CompressionRecipe) -> str:
+    """``qdrift`` / ``seq`` / ``nocomp``, with DAC's drift shrinkage appended."""
+    tag = CALIBRATION_TAGS[recipe.compensation.method]
+    shrink = recipe.compensation.drift_shrink
+    return tag if shrink == "none" else f"{tag}-js{shrink}"
+
+
 def run_name(recipe: CompressionRecipe) -> str:
     """The v2 run/checkpoint/result name of a recipe.
 
@@ -68,7 +75,7 @@ def run_name(recipe: CompressionRecipe) -> str:
             *mask,
             *quant,
             *calib,
-            CALIBRATION_TAGS[recipe.compensation.method],
+            calibration_tag(recipe),
             f"seed{recipe.rotation.seed}",
         ]
     )
@@ -124,7 +131,7 @@ def run_metadata(
         "sparsity": recipe.prune.sparsity,
         "pattern": pattern_tag(recipe),
         "criterion": recipe.prune.criterion,
-        "calibration": CALIBRATION_TAGS[recipe.compensation.method],
+        "calibration": calibration_tag(recipe),
         "quant": recipe.weight.method,
         "calib_size": f"{recipe.nsamples}x{recipe.seqlen}",
         "seed": recipe.rotation.seed,

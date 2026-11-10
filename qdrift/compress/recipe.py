@@ -27,6 +27,7 @@ DEFAULT_CLIP_RHOS: tuple[float, ...] = (0.85, 0.9, 0.95, 1.0)
 SPARSITY_VALUES: tuple[float, ...] = tuple(round(index / 10, 1) for index in range(10))
 PRUNING_CRITERIA: tuple[str, ...] = ("magnitude", "wanda", "sparsegpt")
 MECHANISMS: tuple[str, ...] = ("obr", "qir")
+DRIFT_SHRINK: tuple[str, ...] = ("none", "layer", "row")
 
 
 def _slug(name: str) -> str:
@@ -304,6 +305,9 @@ class CompensationSpec:
     full-precision activations of the compressed path, ``qir`` with the
     outlier tokens quantized as the runtime quantizes them.
     ``outlier_factor`` is QIR's threshold kappa (0 quantizes every token).
+    ``drift_shrink`` shrinks DAC's drift term toward OBR by its sampling noise
+    across calibration sequences: ``layer`` (one factor) or ``row`` (one per
+    output row); ``none`` keeps plain DAC.
     """
 
     method: str = "obr"
@@ -311,6 +315,7 @@ class CompensationSpec:
     damping: float = 0.01
     mechanism: str = "obr"
     outlier_factor: float = 8.0
+    drift_shrink: str = "none"
 
     def validate(self) -> None:
         if self.method not in ("none", "obr", "drift"):
@@ -323,6 +328,10 @@ class CompensationSpec:
             raise ValueError(f"unknown mechanism {self.mechanism}")
         if self.outlier_factor < 0.0:
             raise ValueError("outlier factor must be non-negative")
+        if self.drift_shrink not in DRIFT_SHRINK:
+            raise ValueError(f"unknown drift shrinkage {self.drift_shrink}")
+        if self.drift_shrink != "none" and self.method != "drift":
+            raise ValueError("drift shrinkage needs --comp drift")
 
     def mechanism_tag(self) -> str:
         """``obr``, ``qir``, or ``qir-k{kappa}`` for a non-default threshold."""
@@ -342,6 +351,8 @@ class CompensationSpec:
             data["mechanism"] = self.mechanism
         if self.mechanism == "qir" and self.outlier_factor != 8.0:
             data["outlier_factor"] = self.outlier_factor
+        if self.drift_shrink != "none":
+            data["drift_shrink"] = self.drift_shrink
         return data
 
     @classmethod
@@ -352,6 +363,7 @@ class CompensationSpec:
             damping=float(data.get("damping", 0.01)),
             mechanism=str(data.get("mechanism", "obr")),
             outlier_factor=float(data.get("outlier_factor", 8.0)),
+            drift_shrink=str(data.get("drift_shrink", "none")),
         )
 
 

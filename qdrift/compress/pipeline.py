@@ -49,7 +49,7 @@ from qdrift.obr.calibrate import (
     capture_inputs,
     layer_groups,
 )
-from qdrift.obr.drift import drift_weight
+from qdrift.obr.drift import drift_weight, shrink_drift_weight
 from qdrift.obr.obr import compensate_pruning_error, split_mask
 from qdrift.prune.criteria import (
     hessian_inverse_diag,
@@ -658,6 +658,30 @@ def _pairwise_sensitivity(
     return ratios
 
 
+def _drift_term(
+    recipe: CompressionRecipe,
+    name: str,
+    weight: torch.Tensor,
+    hessian_diff: torch.Tensor,
+    fp_input: torch.Tensor,
+    compressed_input: torch.Tensor,
+) -> torch.Tensor:
+    """``W D``, shrunk toward OBR when the recipe asks for drift shrinkage."""
+    shift = drift_weight(weight, hessian_diff)
+    mode = recipe.compensation.drift_shrink
+    if mode == "none":
+        return shift
+    shift, factor = shrink_drift_weight(
+        shift, weight, fp_input, compressed_input, recipe.seqlen, mode
+    )
+    print(
+        f"{name} drift shrink ({mode}): factor mean {float(factor.mean()):.3f} "
+        f"min {float(factor.min()):.3f} max {float(factor.max()):.3f}",
+        flush=True,
+    )
+    return shift
+
+
 def _batch_chunks(chunks: list[torch.Tensor], batch_size: int) -> list[torch.Tensor]:
     if batch_size <= 1 or not chunks:
         return chunks
@@ -868,7 +892,7 @@ def compress(
             for name in names:
                 weight = layers[name].weight.data.detach().float().to(main_device)
                 local_drift = (
-                    drift_weight(weight, hessian_diff)
+                    _drift_term(recipe, name, weight, hessian_diff, fp_input, compressed_input)
                     if hessian_diff is not None
                     else None
                 )
@@ -1002,7 +1026,9 @@ def compress(
             else:
                 hessian_fp = hessian_system = hessian_raw = hessian_diff = None
             local_drift_weight = (
-                drift_weight(weight, hessian_diff) if hessian_diff is not None else None
+                _drift_term(recipe, name, weight, hessian_diff, fp_input, compressed_input)
+                if hessian_diff is not None
+                else None
             )
             rows = weight.shape[0]
             splits = [
