@@ -35,10 +35,12 @@ def main() -> None:
         record = json.loads(path.read_text(encoding="utf-8"))
         if "ppl" not in record:
             continue
+        criterion = record.get("criterion", "sparsegpt")
         quant = record.get("quant", "gptq")
         size = record.get("calib_size", "32x1024")
         key = (
             f"W{record['wbits']}A{record['abits']}"
+            + ("" if criterion == "sparsegpt" else f" {criterion}")
             + ("" if quant == "gptq" else f" {quant}")
             + ("" if size == "32x1024" else f" {size}"),
             record["sparsity"],

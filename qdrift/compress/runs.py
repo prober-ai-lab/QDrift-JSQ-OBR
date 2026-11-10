@@ -49,10 +49,13 @@ def pattern_tag(recipe: CompressionRecipe) -> str:
 def run_name(recipe: CompressionRecipe) -> str:
     """The v2 run/checkpoint/result name of a recipe.
 
-    The late-half quantizer is named only when it is not GPTQ, the v2 default,
-    and the calibration size only when it is not ``CALIBRATION_SIZE``, e.g.
-    ``llama2-7b_obr_w4a4_s50_c128x2048_qdrift_seed42``.
+    The pruning criterion is named only when it is not SparseGPT and the
+    late-half quantizer only when it is not GPTQ, the v2 defaults, and the
+    calibration size only when it is not ``CALIBRATION_SIZE``, e.g.
+    ``llama2-7b_obr_w4a4_s50_wanda_c128x2048_qdrift_seed42``.
     """
+    criterion = recipe.prune.criterion
+    mask = [] if criterion == "sparsegpt" else [criterion]
     quant = [] if recipe.weight.method == "gptq" else [recipe.weight.method]
     size = (recipe.nsamples, recipe.seqlen)
     calib = [] if size == CALIBRATION_SIZE else [f"c{size[0]}x{size[1]}"]
@@ -62,6 +65,7 @@ def run_name(recipe: CompressionRecipe) -> str:
             recipe.compensation.mechanism_tag(),
             f"w{recipe.weight.bits}a{recipe.activation.bits}",
             pattern_tag(recipe),
+            *mask,
             *quant,
             *calib,
             CALIBRATION_TAGS[recipe.compensation.method],
@@ -119,6 +123,7 @@ def run_metadata(
         "abits": recipe.activation.bits,
         "sparsity": recipe.prune.sparsity,
         "pattern": pattern_tag(recipe),
+        "criterion": recipe.prune.criterion,
         "calibration": CALIBRATION_TAGS[recipe.compensation.method],
         "quant": recipe.weight.method,
         "calib_size": f"{recipe.nsamples}x{recipe.seqlen}",
