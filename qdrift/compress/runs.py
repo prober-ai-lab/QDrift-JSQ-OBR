@@ -56,7 +56,7 @@ def calibration_tag(recipe: CompressionRecipe) -> str:
         tag = f"{tag}-js{comp.drift_shrink}"
     if comp.curvature != "none":
         tag = f"{tag}-{comp.curvature}"
-        if comp.curvature_damping != 0.1:
+        if comp.curvature_damping != 1.0:
             tag = f"{tag}-g{comp.curvature_damping:g}"
         if comp.curvature_iters != 256:
             tag = f"{tag}-i{comp.curvature_iters}"

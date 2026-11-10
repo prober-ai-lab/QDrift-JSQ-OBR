@@ -80,7 +80,7 @@ def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--outlier-factor", type=float, default=8.0, help="qir: quantize tokens whose max|z_t| exceeds this times the median (0 = all tokens)")
     parser.add_argument("--drift-shrink", choices=DRIFT_SHRINK, default="none", help="drift: shrink DAC's drift term toward OBR by its noise across calibration sequences, per layer or per output row")
     parser.add_argument("--curvature", choices=CURVATURE, default="none", help="fisher: couple the output rows of the compensation through the layer's output curvature (empirical Fisher of the calibration NLL)")
-    parser.add_argument("--curvature-damping", type=float, default=0.1, help="damping of the output curvature, relative to its mean diagonal")
+    parser.add_argument("--curvature-damping", type=float, default=1.0, help="damping of the output curvature, relative to its mean diagonal")
     parser.add_argument("--curvature-iters", type=int, default=256, help="conjugate-gradient steps per compensation stage for --curvature")
     parser.add_argument("--rotation", choices=("hadamard", "none"), default="hadamard", help="hadamard=fast global Hadamard; none=identity")
     parser.add_argument("--nsamples", type=int, default=128)

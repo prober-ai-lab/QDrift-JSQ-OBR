@@ -324,7 +324,7 @@ class CompensationSpec:
     outlier_factor: float = 8.0
     drift_shrink: str = "none"
     curvature: str = "none"
-    curvature_damping: float = 0.1
+    curvature_damping: float = 1.0
     curvature_iters: int = 256
 
     def validate(self) -> None:
@@ -387,7 +387,7 @@ class CompensationSpec:
             outlier_factor=float(data.get("outlier_factor", 8.0)),
             drift_shrink=str(data.get("drift_shrink", "none")),
             curvature=str(data.get("curvature", "none")),
-            curvature_damping=float(data.get("curvature_damping", 0.1)),
+            curvature_damping=float(data.get("curvature_damping", 1.0)),
             curvature_iters=int(data.get("curvature_iters", 256)),
         )
 
