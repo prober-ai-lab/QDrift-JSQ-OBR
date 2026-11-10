@@ -581,8 +581,8 @@ def common_arguments(parser: argparse.ArgumentParser) -> None:
         default=6.0,
         help="GPU memory left free when choosing resident blocks",
     )
-    parser.add_argument("--nsamples", type=int, default=32)
-    parser.add_argument("--seqlen", type=int, default=1024)
+    parser.add_argument("--nsamples", type=int, default=128)
+    parser.add_argument("--seqlen", type=int, default=2048)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--damping", type=float, default=0.01)
     parser.add_argument("--alpha", type=float, default=0.5)

@@ -11,6 +11,7 @@ on a system ``H`` and a cross matrix ``B`` (row target ``b = B w``, i.e.
 ``obr``  H = E[x x^T],          B = E[x x^T]
 ``qir``  H = E[x_hat x_hat^T],  B = E[x_hat x^T],  x_hat = Q_a(x) on the
          outlier tokens (``max|x_t|`` above 8x the median), x elsewhere
+``all``  H = E[q q^T],          B = E[q x^T],      every token quantized
 
 On held-out C4 inputs the deployment error is ``err = E||V q - W x||^2``
 over ``E||W x||^2``; ``err_cal`` is the same on the calibration inputs.  Per
@@ -44,7 +45,9 @@ from qdrift.quant.activation import fake_quantize_activations, outlier_tokens
 from qdrift.quant.quantize import qrange
 
 STEM = "qir_depth"
-MECHANISMS = ("obr", "qir")
+MECHANISMS = ("obr", "qir", "all")
+# Tokens moved to the GPU at once while the moments are accumulated.
+CHUNK = 8192
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,7 +62,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--a-bits", type=int, default=4)
     parser.add_argument("--holdout", type=int, default=32, help="C4 chunks")
     parser.add_argument("--rows", type=int, default=256, help="0 = all rows")
-    parser.set_defaults(group_size=0)
+    # Leaves room for the float64 moments of a down_proj next to the blocks.
+    parser.set_defaults(group_size=0, reserve_gb=12.0)
     return parser.parse_args()
 
 
@@ -81,7 +85,10 @@ def recipe_for(args: argparse.Namespace, mechanism: str, sparsity: float):
         ),
         rotation=RotationSpec(mode=args.rotation, seed=args.seed),
         compensation=CompensationSpec(
-            method="obr", alpha=args.alpha, damping=args.damping, mechanism=mechanism
+            method="obr",
+            alpha=args.alpha,
+            damping=args.damping,
+            mechanism="obr" if mechanism == "obr" else "qir",
         ),
         nsamples=args.nsamples,
         seqlen=args.seqlen,
@@ -90,36 +97,57 @@ def recipe_for(args: argparse.Namespace, mechanism: str, sparsity: float):
 
 
 class Inputs:
-    """One tapped input source, in float64 moments of ``x``, ``q`` and ``x_hat``."""
+    """One tapped input source, in float64 moments of ``x``, ``q`` and ``x_hat``.
 
-    def __init__(self, bits: int):
+    Tokens are kept on the host in float16 and streamed to ``device`` in
+    chunks, so 128x2048 calibration tokens of a ``down_proj`` fit a 24 GB card.
+    """
+
+    def __init__(self, bits: int, device: torch.device):
         self.bits = bits
+        self.device = device
         self.parts: list[torch.Tensor] = []
 
     def __call__(self, value: torch.Tensor) -> None:
-        self.parts.append(value.reshape(-1, value.shape[-1]).float())
+        self.parts.append(value.reshape(-1, value.shape[-1]).to("cpu", torch.float16))
 
     def finish(self) -> None:
-        x = torch.cat(self.parts)
+        x_all = torch.cat(self.parts)
         self.parts.clear()
-        hot = outlier_tokens(x, OUTLIER_FACTOR, x.device)
-        q = fake_quantize_activations(x, self.bits, "midtread").double()
-        x = x.double()
-        x_hat = torch.where(hot[:, None], q, x)
-        count = x.shape[0]
-        self.xx = x.t() @ x / count
-        self.qq = q.t() @ q / count
-        self.qx = q.t() @ x / count
-        self.hh = x_hat.t() @ x_hat / count
-        self.hx = x_hat.t() @ x / count
-        n = q - x
-        self.nn = n.t() @ n / count
-        self.nn_o = n[hot].t() @ n[hot] / count
-        self.outlier_frac = float(hot.float().mean())
+        hot_all = outlier_tokens(x_all, OUTLIER_FACTOR, self.device).to(self.device)
+        dim, count = x_all.shape[1], x_all.shape[0]
+        names = ("xx", "qq", "qx", "hh", "hx", "nn_o")
+        moments = {
+            name: torch.zeros(dim, dim, dtype=torch.float64, device=self.device)
+            for name in names
+        }
+        for start in range(0, count, CHUNK):
+            x = x_all[start : start + CHUNK].to(self.device, torch.float32)
+            hot = hot_all[start : start + CHUNK]
+            q = fake_quantize_activations(x, self.bits, "midtread").double()
+            x = x.double()
+            x_hat = torch.where(hot[:, None], q, x)
+            n = (q - x)[hot]
+            moments["xx"] += x.t() @ x
+            moments["qq"] += q.t() @ q
+            moments["qx"] += q.t() @ x
+            moments["hh"] += x_hat.t() @ x_hat
+            moments["hx"] += x_hat.t() @ x
+            moments["nn_o"] += n.t() @ n
+            del x, q, x_hat, n
+        # The moments wait on the host: the other input set needs the card.
+        for name in names:
+            setattr(self, name, moments.pop(name).div_(count).cpu())
+        self.nn = self.qq - self.qx - self.qx.t() + self.xx
+        self.outlier_frac = float(hot_all.float().mean())
 
     def system(self, mechanism: str) -> tuple[torch.Tensor, torch.Tensor]:
         """``(H, B)`` of one mechanism."""
-        return (self.xx, self.xx) if mechanism == "obr" else (self.hh, self.hx)
+        if mechanism == "obr":
+            return self.xx, self.xx
+        if mechanism == "qir":
+            return self.hh, self.hx
+        return self.qq, self.qx
 
 
 def form(matrix: torch.Tensor, left: torch.Tensor, right: torch.Tensor) -> float:
@@ -139,7 +167,7 @@ def measure(args, name: str, layer_type: str, weight, cal: Inputs, held: Inputs)
     rows = C.row_subset(weight.shape[0], args.rows, args.seed, weight.device)
     if rows is not None:
         weight = weight[rows]
-    w = weight.double()
+    w = weight.double().cpu()
     noise = form(held.nn, w, w)
     layer = {
         "layer": name,
@@ -155,7 +183,8 @@ def measure(args, name: str, layer_type: str, weight, cal: Inputs, held: Inputs)
         for mechanism in MECHANISMS:
             hessian, cross = cal.system(mechanism)
             diff = None if mechanism == "obr" else (hessian - cross.t()).float()
-            hessian = hessian.float()
+            diff = None if diff is None else diff.to(weight.device)
+            hessian = hessian.float().to(weight.device)
             system = C.damped(hessian, args.damping)
             result = _quantize_layer(
                 recipe_for(args, mechanism, sparsity),
@@ -168,7 +197,7 @@ def measure(args, name: str, layer_type: str, weight, cal: Inputs, held: Inputs)
                 system,
                 diff,
             )
-            v = result.new_weight.to(device=weight.device, dtype=torch.float64)
+            v = result.new_weight.to(device="cpu", dtype=torch.float64)
             out.append(
                 {
                     **layer,
@@ -188,7 +217,8 @@ def main() -> None:
     path = C.result_path(
         STEM,
         args.model,
-        f"rot-{args.rotation}_{C.gran_tag(args.group_size)}_{args.range}",
+        f"rot-{args.rotation}_{C.gran_tag(args.group_size)}_{args.range}"
+        f"_c{args.nsamples}x{args.seqlen}",
         f"blk{'+'.join(map(str, args.blocks))}_w{args.w_bits}a{args.a_bits}",
         C.span(args.sparsities, "s") + f"_{args.criterion}_rows{args.rows}",
         args.suffix,
@@ -216,7 +246,8 @@ def main() -> None:
             start = time.time()
             module = C.block_module(model, index, layer_type)
             source = C.block_module(model, index, C.INPUT_SOURCE[layer_type])
-            cal, ref = Inputs(args.a_bits), Inputs(args.a_bits)
+            cal = Inputs(args.a_bits, streamer.device)
+            ref = Inputs(args.a_bits, streamer.device)
             streamer.run(index, hidden, kwargs, {source: cal})
             streamer.run(index, held, held_kwargs, {source: ref})
             cal.finish()
@@ -228,7 +259,8 @@ def main() -> None:
             by = {(r["sparsity"], r["mechanism"]): r["err"] for r in layer_rows}
             first = layer_rows[0]
             summary = " | ".join(
-                f"s{s:g} obr {by[(s, 'obr')]:.4f} qir {by[(s, 'qir')]:.4f}"
+                f"s{s:g} "
+                + " ".join(f"{mech} {by[(s, mech)]:.4f}" for mech in MECHANISMS)
                 for s in args.sparsities
             )
             C.log(

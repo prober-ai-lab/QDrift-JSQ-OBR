@@ -1,10 +1,10 @@
 # Copyright (c) 2026 QDrift Authors. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Minitest: input drift accumulates with depth; DriftOBR cancels part of it.
+"""Minitest: input drift accumulates with depth; DAC cancels part of it.
 
 The whole model is compressed sequentially in memory with the pipeline's own
 per-layer routine (``_quantize_layer``), once per compensation mode
-(none / OBR / DriftOBR), with the same mask criterion for all of them.  Before
+(none / OBR / DAC), with the same mask criterion for all of them.  Before
 each linear layer is compressed we have its full-precision input ``X`` (dense
 model) and its actual input ``X_hat`` (compressed prefix); after compression
 we record, over all calibration tokens,
@@ -16,12 +16,18 @@ we record, over all calibration tokens,
 ``cancel``     share of E||W dx||^2 that a free update of W could cancel,
                1 - min_D E||W dx + D x_hat||^2 / E||W dx||^2
 
-all normalized by E||W x||^2 where useful.  Every quantity follows from the
-dual-path moments E[x_hat x_hat^T], E[dx x_hat^T], E[dx dx^T], so no token
-matrix product is needed.  The end-to-end WikiText-2 NLL of each compressed
-model is recorded too.
+all normalized by E||W x||^2 where useful.  The same quantities are measured
+on held-out C4 inputs (``held_*``), with the compressed weight and the update
+``D`` fitted on the calibration set, so ``held_cancel`` is the share of the
+inherited drift that a calibration-fitted update cancels out of sample.
+Every quantity follows from the dual-path moments E[x_hat x_hat^T],
+E[dx x_hat^T], E[dx dx^T], so no token matrix product is needed.  The dense
+model is streamed block by block next to the compressed one, so only one
+block's full-precision inputs are held.  The end-to-end WikiText-2 NLL of each
+compressed model is recorded too.
 
     python minitests/drift_accumulation.py --comps none,obr,drift
+    python minitests/drift_accumulation.py --bits 4 --grid midtread --group-size 0
 """
 
 from __future__ import annotations
@@ -66,10 +72,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bits", type=int, default=2)
     parser.add_argument("--grid", choices=("midrise", "midtread"), default="midrise")
     parser.add_argument("--sparsity", type=float, default=0.5)
-    parser.add_argument("--criterion", choices=PRUNING_CRITERIA, default="magnitude")
+    parser.add_argument("--criterion", choices=PRUNING_CRITERIA, default="sparsegpt")
+    parser.add_argument("--quant", choices=("rtn", "gptq"), default="gptq")
     parser.add_argument("--max-blocks", type=int, default=0, help="0 = all blocks")
     parser.add_argument("--eval-samples", type=int, default=16)
     parser.add_argument("--eval-seqlen", type=int, default=2048)
+    parser.add_argument("--holdout", type=int, default=32, help="C4 chunks")
+    # Four hidden-state streams and two sets of moments share the card.
+    parser.set_defaults(reserve_gb=12.0)
     return parser.parse_args()
 
 
@@ -79,7 +89,10 @@ def output_path(args: argparse.Namespace) -> Path:
     gran = C.gran_tag(args.group_size)
     crit = args.criterion
     grid = "mr" if args.grid == "midrise" else "mt"
-    config = f"w{args.bits}_{gran}_{grid}_{args.range}_u{args.sparsity:g}_{crit}"
+    config = (
+        f"w{args.bits}_{gran}_{grid}_{args.range}_{args.quant}"
+        f"_u{args.sparsity:g}_{crit}"
+    )
     if args.max_blocks:
         config += f"_first{args.max_blocks}"
     return C.result_path(
@@ -99,7 +112,7 @@ def make_recipe(args: argparse.Namespace, comp: str) -> CompressionRecipe:
             ),
             grid=args.grid,
             range=args.range,
-            method="rtn",
+            method=args.quant,
         ),
         prune=PruneSpec(
             sparsity=args.sparsity,
@@ -144,24 +157,18 @@ def trace_form(a: torch.Tensor, matrix: torch.Tensor, b: torch.Tensor) -> float:
     return float((a @ matrix).mul_(b).sum())
 
 
-@torch.no_grad()
-def layer_metrics(
-    weight: torch.Tensor, new: torch.Tensor, moments: DualMoments, system: torch.Tensor
+def decomposition(
+    weight: torch.Tensor, delta: torch.Tensor, update: torch.Tensor, moments: DualMoments
 ) -> dict:
-    """Error decomposition of one compressed layer, from the moments."""
-    delta = new - weight
+    """Error terms of ``W + delta`` and the residual drift under ``update``."""
     reference = trace_form(weight, moments.fp, weight)
     inherited = trace_form(weight, moments.dd, weight)
     injected = trace_form(delta, moments.hat, delta)
     # E[(dW x_hat) . (W dx)] = tr(dW E[x_hat dx^T] W^T) = tr(dW H_diff^T W^T)
     cross = trace_form(delta, moments.diff.t(), weight)
-    # Best dense update against the inherited drift: D = -(W H_diff) H_sys^-1.
-    # One Cholesky solve for all rows; solve_psd_many batches tiny row chunks.
-    drift = weight @ moments.diff
-    update = -torch.cholesky_solve(drift.t(), torch.linalg.cholesky(system)).t()
     residual = (
         inherited
-        + 2.0 * float((update * drift).sum())
+        + 2.0 * float((update * (weight @ moments.diff)).sum())
         + trace_form(update, moments.hat, update)
     )
     return {
@@ -172,6 +179,26 @@ def layer_metrics(
         "total": (injected + inherited + 2.0 * cross) / reference,
         "cancel": 1.0 - residual / inherited if inherited > 0 else math.nan,
     }
+
+
+@torch.no_grad()
+def layer_metrics(
+    weight: torch.Tensor,
+    new: torch.Tensor,
+    moments: DualMoments,
+    held: DualMoments,
+    system: torch.Tensor,
+) -> dict:
+    """Error decomposition of one compressed layer, in and out of sample."""
+    delta = new - weight
+    # Best dense update against the inherited drift: D = -(W H_diff) H_sys^-1,
+    # fitted on the calibration moments.
+    drift = weight @ moments.diff
+    update = -torch.cholesky_solve(drift.t(), torch.linalg.cholesky(system)).t()
+    out = decomposition(weight, delta, update, moments)
+    for key, value in decomposition(weight, delta, update, held).items():
+        out[f"held_{key}"] = value
+    return out
 
 
 def capture(
@@ -194,27 +221,54 @@ def capture(
     return torch.cat(values)
 
 
+def dense_inputs(
+    streamer: C.BlockStreamer, index: int, hidden: list[torch.Tensor], kwargs: list[dict]
+) -> tuple[dict[str, torch.Tensor], list[torch.Tensor]]:
+    """Inputs of every capture point of dense block ``index``, and its output."""
+    values: dict[str, list[torch.Tensor]] = {source: [] for source, _ in GROUPS}
+    taps = {
+        C.block_module(streamer.model, index, source): (
+            lambda value, source=source: values[source].append(
+                value.reshape(-1, value.shape[-1]).to("cpu", torch.float16)
+            )
+        )
+        for source, _ in GROUPS
+    }
+    hidden = streamer.run(index, hidden, kwargs, taps)
+    return {source: torch.cat(chunks) for source, chunks in values.items()}, hidden
+
+
 @torch.no_grad()
 def compress_and_measure(
     args: argparse.Namespace,
     comp: str,
     streamer: C.BlockStreamer,
     start: tuple[list[torch.Tensor], list[dict]],
-    fp_inputs: dict[tuple[int, str], torch.Tensor],
+    held_start: tuple[list[torch.Tensor], list[dict]],
     depth: int,
     evals: list[torch.Tensor],
 ) -> dict:
-    """Compress the model sequentially and measure every layer."""
+    """Compress the model sequentially and measure every layer.
+
+    The dense streams pass block ``index`` before it is compressed, the
+    compressed streams after.
+    """
     recipe = make_recipe(args, comp)
     qparams = qrange(args.bits, args.grid)
     hidden, kwargs = start
+    held, held_kwargs = held_start
+    fp_hidden, fp_held = hidden, held
     rows = []
     t0 = time.time()
     for index in range(depth):
+        fp_inputs, fp_hidden = dense_inputs(streamer, index, fp_hidden, kwargs)
+        fp_held_inputs, fp_held = dense_inputs(streamer, index, fp_held, held_kwargs)
         for source, types in GROUPS:
             hat = capture(streamer, index, hidden, kwargs, source)
-            fp = fp_inputs[(index, source)]
-            moments = DualMoments(fp, hat, streamer.device)
+            moments = DualMoments(fp_inputs.pop(source), hat, streamer.device)
+            del hat
+            hat = capture(streamer, index, held, held_kwargs, source)
+            held_moments = DualMoments(fp_held_inputs.pop(source), hat, streamer.device)
             del hat
             system = C.damped(moments.hat, args.damping)
             drift_rel = math.sqrt(
@@ -248,14 +302,20 @@ def compress_and_measure(
                         "type": layer_type,
                         "layer": C.layer_name(index, layer_type),
                         "drift": drift_rel,
-                        **layer_metrics(weight, new, moments, system),
+                        **layer_metrics(weight, new, moments, held_moments, system),
                     }
                 )
                 del weight, new, result
-            del moments, system
+            del moments, held_moments, system
             torch.cuda.empty_cache()
         hidden = streamer.run(index, hidden, kwargs)
-        C.log(f"[{comp}] block {index} done, elapsed {time.time() - t0:.0f}s")
+        held = streamer.run(index, held, held_kwargs)
+        last = rows[-1]
+        C.log(
+            f"[{comp}] block {index} done, down drift {last['drift']:.3f} "
+            f"cancel {last['cancel']:.3f} held {last['held_cancel']:.3f}, "
+            f"elapsed {time.time() - t0:.0f}s"
+        )
     e_hidden, e_kwargs = streamer.start(evals)
     nll = (
         streamer.nll_from(0, e_hidden, e_kwargs, evals)
@@ -280,24 +340,11 @@ def main() -> None:
         tokenizer, args.nsamples, args.seqlen, args.seed, args.batch_size
     )
     evals = C.eval_batches(tokenizer, args.eval_samples, args.eval_seqlen)
+    held = C.get_loaders(
+        "c4", tokenizer, nsamples=args.holdout, seqlen=args.seqlen, eval_mode=True
+    )
     start = streamer.start(calib)
-
-    # Full-precision inputs of every capture point, as DriftOBR collects them.
-    fp_inputs: dict[tuple[int, str], torch.Tensor] = {}
-    hidden, kwargs = start
-    for index in range(depth):
-        values: dict[str, list[torch.Tensor]] = {source: [] for source, _ in GROUPS}
-        taps = {
-            C.block_module(model, index, source): (
-                lambda value, source=source: values[source].append(
-                    value.reshape(-1, value.shape[-1]).to("cpu", torch.float16)
-                )
-            )
-            for source, _ in GROUPS
-        }
-        hidden = streamer.run(index, hidden, kwargs, taps)
-        for source, chunks in values.items():
-            fp_inputs[(index, source)] = torch.cat(chunks)
+    held_start = streamer.start(C.batch_chunks(held, args.batch_size))
     e_hidden, e_kwargs = streamer.start(evals)
     dense_nll = streamer.nll_from(0, e_hidden, e_kwargs, evals)
     del e_hidden, e_kwargs
@@ -324,7 +371,7 @@ def main() -> None:
         for name, weight in linears.items():
             model.get_submodule(name).weight.data.copy_(weight)
         result = compress_and_measure(
-            args, comp, streamer, start, fp_inputs, depth, evals
+            args, comp, streamer, start, held_start, depth, evals
         )
         rows += result["rows"]
         nll[comp] = result["nll"]
