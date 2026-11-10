@@ -43,6 +43,22 @@ class _Accumulator:
         self.tokens += g.shape[0]
 
 
+def _normal_parameters(model: torch.nn.Module) -> None:
+    """Replace inference-mode parameters (rotate_model) by normal copies.
+
+    Inference tensors cannot be saved for backward; cloning one at a time
+    keeps the peak memory at one extra parameter.
+    """
+    copies: dict[int, torch.nn.Parameter] = {}
+    for module in model.modules():
+        for name, param in list(module._parameters.items()):
+            if param is None or not param.is_inference():
+                continue
+            if id(param) not in copies:
+                copies[id(param)] = torch.nn.Parameter(param.clone(), requires_grad=False)
+            module._parameters[name] = copies[id(param)]
+
+
 def collect_output_curvature(
     model: torch.nn.Module,
     chunks: list[torch.Tensor],
@@ -56,6 +72,7 @@ def collect_output_curvature(
     covered in passes of at most ``budget_bytes`` of accumulators on ``device``.
     """
     sequences = [row for batch in chunks for row in batch.reshape(-1, batch.shape[-1])]
+    _normal_parameters(model)
     params = [p for p in model.parameters() if p.requires_grad]
     for p in params:
         p.requires_grad_(False)

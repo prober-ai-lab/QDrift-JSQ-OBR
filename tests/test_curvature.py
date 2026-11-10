@@ -117,6 +117,9 @@ def test_collect_matches_manual_gradients() -> None:
         num_attention_heads=2, num_key_value_heads=2, max_position_embeddings=16,
     )
     model = LlamaForCausalLM(config).double().eval()
+    with torch.inference_mode():  # rotate_model leaves inference tensors
+        layer = model.model.layers[0].mlp.up_proj
+        layer.weight = torch.nn.Parameter(layer.weight.clone())
     chunks = [torch.randint(0, 50, (2, 8))]
     layers = {"up": model.model.layers[0].mlp.up_proj, "o": model.model.layers[1].self_attn.o_proj}
     got = collect_output_curvature(model, chunks, layers, "cpu", budget_bytes=1)
@@ -137,4 +140,4 @@ def test_collect_matches_manual_gradients() -> None:
         h.remove()
     for k in layers:
         assert torch.allclose(got[k].double(), want[k] / 16, rtol=1e-4, atol=1e-8)
-    assert all(p.requires_grad for p in model.parameters())
+    assert not any(p.is_inference() for p in model.parameters())
