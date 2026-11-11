@@ -198,8 +198,7 @@ def _compress(args: argparse.Namespace, recipe: CompressionRecipe) -> int:
 def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     # fmt: off
     parser.add_argument("--overwrite", action="store_true", help="replace an existing v2 checkpoint/result of the same name")
-    parser.add_argument("--ppl", action=argparse.BooleanOptionalAction, default=True, help="evaluate WikiText-2 (full test) and C4 PPL at 2048 tokens")
-    parser.add_argument("--c4-chunks", type=int, default=256)
+    parser.add_argument("--ppl", action=argparse.BooleanOptionalAction, default=True, help="evaluate WikiText-2 (full test) PPL at 2048 tokens")
     parser.add_argument("--eval-batch-size", type=int, default=2)
     parser.add_argument("--zeroshot", action=argparse.BooleanOptionalAction, default=False, help="evaluate the lm-eval zero-shot tasks")
     parser.add_argument("--lm-eval-tasks", default=",".join(ZEROSHOT_TASKS))
@@ -250,11 +249,11 @@ def _run(args: argparse.Namespace, recipe: CompressionRecipe) -> int:
         )
     if args.ppl:
         record["ppl"] = {}
-        for dataset in ("wikitext2", "c4"):
+        for dataset in PPL_DATASETS:
             chunks = get_loaders(
                 dataset,
                 tokenizer,
-                nsamples=args.c4_chunks if dataset == "c4" else None,
+                nsamples=None,
                 seqlen=2048,
                 eval_mode=True,
                 seed=42,

@@ -13,7 +13,7 @@ on a system ``H`` and a cross matrix ``B`` (row target ``b = B w``, i.e.
          outlier tokens (``max|x_t|`` above 8x the median), x elsewhere
 ``all``  H = E[q q^T],          B = E[q x^T],      every token quantized
 
-On held-out C4 inputs the deployment error is ``err = E||V q - W x||^2``
+On held-out WikiText-2 test inputs the deployment error is ``err = E||V q - W x||^2``
 over ``E||W x||^2``; ``err_cal`` is the same on the calibration inputs.  Per
 layer, ``noise_over_signal = E||W n||^2 / E||W x||^2`` and ``outlier_frac`` /
 ``outlier_noise`` give the share of outlier tokens and their share of
@@ -60,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--criterion", default="sparsegpt")
     parser.add_argument("--w-bits", type=int, default=4)
     parser.add_argument("--a-bits", type=int, default=4)
-    parser.add_argument("--holdout", type=int, default=32, help="C4 chunks")
+    parser.add_argument("--holdout", type=int, default=32, help="WikiText-2 test chunks")
     parser.add_argument("--rows", type=int, default=256, help="0 = all rows")
     # Leaves room for the float64 moments of a down_proj next to the blocks.
     parser.set_defaults(group_size=0, reserve_gb=12.0)
@@ -232,7 +232,7 @@ def main() -> None:
     )
     hidden, kwargs = streamer.start(calib)
     chunks = C.get_loaders(
-        "c4", tokenizer, nsamples=args.holdout, seqlen=args.seqlen, eval_mode=True
+        "wikitext2", tokenizer, nsamples=args.holdout, seqlen=args.seqlen, eval_mode=True
     )
     held, held_kwargs = streamer.start(C.batch_chunks(chunks, args.batch_size))
     rows: list[dict] = []

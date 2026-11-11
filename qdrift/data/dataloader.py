@@ -1,6 +1,6 @@
 # Copyright (c) 2026 QDrift Authors. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Calibration and PPL data loading: WikiText, C4, and Pile."""
+"""Calibration and PPL data loading: WikiText-2 and Pile."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import torch
 from transformers import PreTrainedTokenizerBase
 
 __all__ = [
-    "get_c4",
     "get_loaders",
     "get_pile",
     "get_wikitext2",
@@ -19,9 +18,9 @@ __all__ = [
 ]
 
 CALIBRATION_DATASET = "wikitext2"
-PPL_DATASETS = ("wikitext2", "c4")
+PPL_DATASETS = ("wikitext2",)
 # Splits used for PPL, following the GPTQ / OBR / QuaRot convention.
-PPL_SPLITS = {"wikitext2": "test", "c4": "validation"}
+PPL_SPLITS = {"wikitext2": "test"}
 
 
 def _join_text(dataset: datasets.Dataset, key: str = "text") -> str:
@@ -89,39 +88,6 @@ def get_wikitext2(
     return _random_chunks(ids, nsamples, seqlen, seed)
 
 
-def get_c4(
-    nsamples: int,
-    seqlen: int,
-    tokenizer: PreTrainedTokenizerBase,
-    eval_mode: bool = False,
-    seed: int = 0,
-) -> list[torch.Tensor]:
-    """Load C4 calibration or validation chunks."""
-    if eval_mode:
-        data = datasets.load_dataset(
-            "allenai/c4",
-            data_files={"validation": "en/c4-validation.00000-of-00008.json.gz"},
-            split="validation",
-        )
-        ids = tokenizer(" ".join(data[:1100]["text"])).input_ids
-        return _slice_chunks(ids, seqlen, limit=nsamples)
-    data = datasets.load_dataset(
-        "allenai/c4",
-        data_files={"train": "en/c4-train.00000-of-01024.json.gz"},
-        split="train",
-    )
-    generator = random.Random(seed)
-    chunks: list[torch.Tensor] = []
-    while len(chunks) < nsamples:
-        item = data[generator.randint(0, len(data) - 1)]["text"]
-        ids = tokenizer(item).input_ids
-        if len(ids) < seqlen:
-            continue
-        start = generator.randint(0, len(ids) - seqlen)
-        chunks.append(torch.tensor(ids[start : start + seqlen], dtype=torch.long))
-    return chunks
-
-
 def get_pile(
     nsamples: int,
     seqlen: int,
@@ -148,8 +114,6 @@ def get_loaders(
     """
     if dataset == "wikitext2":
         return get_wikitext2(nsamples, seqlen, tokenizer, eval_mode, seed)
-    if dataset == "c4":
-        return get_c4(nsamples, seqlen, tokenizer, eval_mode, seed)
     if dataset == "pile":
         if eval_mode:
             raise ValueError("pile only supports calibration")

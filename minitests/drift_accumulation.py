@@ -17,7 +17,7 @@ we record, over all calibration tokens,
                1 - min_D E||W dx + D x_hat||^2 / E||W dx||^2
 
 all normalized by E||W x||^2 where useful.  The same quantities are measured
-on held-out C4 inputs (``held_*``), with the compressed weight and the update
+on held-out WikiText-2 test inputs (``held_*``), with the compressed weight and the update
 ``D`` fitted on the calibration set, so ``held_cancel`` is the share of the
 inherited drift that a calibration-fitted update cancels out of sample.
 Every quantity follows from the dual-path moments E[x_hat x_hat^T],
@@ -77,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-blocks", type=int, default=0, help="0 = all blocks")
     parser.add_argument("--eval-samples", type=int, default=16)
     parser.add_argument("--eval-seqlen", type=int, default=2048)
-    parser.add_argument("--holdout", type=int, default=32, help="C4 chunks")
+    parser.add_argument("--holdout", type=int, default=32, help="WikiText-2 test chunks")
     # Four hidden-state streams and two sets of moments share the card.
     parser.set_defaults(reserve_gb=12.0)
     return parser.parse_args()
@@ -341,7 +341,7 @@ def main() -> None:
     )
     evals = C.eval_batches(tokenizer, args.eval_samples, args.eval_seqlen)
     held = C.get_loaders(
-        "c4", tokenizer, nsamples=args.holdout, seqlen=args.seqlen, eval_mode=True
+        "wikitext2", tokenizer, nsamples=args.holdout, seqlen=args.seqlen, eval_mode=True
     )
     start = streamer.start(calib)
     held_start = streamer.start(C.batch_chunks(held, args.batch_size))

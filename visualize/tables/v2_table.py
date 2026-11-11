@@ -5,7 +5,7 @@
 Rows are (setting, sparsity); columns the four combinations of calibration
 (``seq`` / ``qdrift``) and mechanism (``obr`` / ``qir``):
 OBR = obr+seq, +DAC = obr+qdrift, +QIR = qir+seq, QDrift = qir+qdrift.
-Cells are ``WikiText-2 / C4`` perplexity; missing runs print ``-``.  Runs
+Cells are WikiText-2 perplexity; missing runs print ``-``.  Runs
 whose late half is not quantized by GPTQ, or whose calibration size is not
 32x1024, get their own rows (``W4A4 rtn``, ``W4A4 128x2048``).
 
@@ -55,7 +55,7 @@ def main() -> None:
         cells = []
         for _, mechanism, calibration in COLUMNS:
             ppl = runs.get((setting, sparsity, mechanism, calibration))
-            cells.append(f"{ppl['wikitext2']:.2f} / {ppl['c4']:.2f}" if ppl else "-")
+            cells.append(f"{ppl['wikitext2']:.2f}" if ppl else "-")
         print(f"| {setting} | {sparsity:.0%} | " + " | ".join(cells) + " |")
 
 

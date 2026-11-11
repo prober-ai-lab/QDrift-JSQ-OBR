@@ -84,14 +84,35 @@ _STREAM_HESSIAN_ELEMENTS = 1 << 27
 _HESSIAN_STREAM_ROWS = 4096
 
 
+def _hessian_quantizer(
+    recipe: CompressionRecipe,
+) -> Callable[[torch.Tensor], torch.Tensor] | None:
+    """DAC's ``H_hat = E[Q_a(z) Q_a(z)^T]``: the deployed layer reads its
+    input through the runtime activation quantizer, so the system Hessian is
+    formed on ``Q_a(z)``; the drift ``D = E[(z - x) z^T]`` keeps ``z``.  None
+    for OBR, 16-bit activations, and qir (which quantizes its own inputs)."""
+    act = recipe.activation
+    comp = recipe.compensation
+    if (
+        comp.method != "drift"
+        or act.bits >= 16
+        or get_mechanism(comp.mechanism, comp.outlier_factor).quantizes_inputs
+    ):
+        return None
+    args = (act.bits, act.grid, act.granularity.kind, act.granularity.group_size, act.clip_ratio)
+    return lambda values: fake_quantize_activations(values, *args)
+
+
 @torch.no_grad()
 def _hessians_streaming(
     fp_input: torch.Tensor,
     compressed_input: torch.Tensor | None,
     damping: float,
     device: str,
+    act_quant: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-    """Accumulate the mask/system Hessian and the asymmetric drift matrix."""
+    """Accumulate the mask/system Hessian and the asymmetric drift matrix
+    (the Hessian on ``act_quant(z_hat)`` when given)."""
     total = int(fp_input.shape[0])
     width = int(fp_input.shape[-1])
     # The mask/system Hessian uses the compressed path when it is available.
@@ -101,7 +122,9 @@ def _hessians_streaming(
     for start in range(0, total, _HESSIAN_STREAM_ROWS):
         end = min(start + _HESSIAN_STREAM_ROWS, total)
         zhat = source[start:end].to(device=device, dtype=torch.float32)
-        hessian.add_(zhat.t() @ zhat)
+        zq = act_quant(zhat) if act_quant is not None else zhat
+        hessian.add_(zq.t() @ zq)
+        del zq
         if hessian_diff is not None:
             zfp = fp_input[start:end].to(device=device, dtype=torch.float32)
             hessian_diff.add_((zhat - zfp).t() @ zhat)
@@ -161,11 +184,14 @@ def _hessians(
     fp_input: torch.Tensor | None,
     compressed_input: torch.Tensor | None,
     damping: float,
+    act_quant: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
     if fp_input is None:
         return None, None, None
     if compressed_input is not None:
-        hessian_hat = _hessian_from_inputs(compressed_input)
+        hessian_hat = _hessian_from_inputs(
+            act_quant(compressed_input) if act_quant is not None else compressed_input
+        )
         hessian_diff = (
             (compressed_input - fp_input).t()
             @ compressed_input
@@ -505,6 +531,7 @@ def _process_full_layer(
                 compressed_input,
                 recipe.compensation.damping,
                 device,
+                _hessian_quantizer(recipe),
             )
             hessian_raw = hessian_system
         else:
@@ -522,6 +549,7 @@ def _process_full_layer(
                 local_fp,
                 local_hat,
                 recipe.compensation.damping,
+                _hessian_quantizer(recipe),
             )
             hessian_raw = hessian_system
     else:
@@ -912,6 +940,7 @@ def compress(
                     compressed_input,
                     recipe.compensation.damping,
                     main_device,
+                    _hessian_quantizer(recipe),
                 )
                 hessian_raw = hessian_system
             else:
@@ -1052,6 +1081,7 @@ def compress(
                     compressed_input,
                     recipe.compensation.damping,
                     main_device,
+                    _hessian_quantizer(recipe),
                 )
                 hessian_raw = hessian_system
             else:
