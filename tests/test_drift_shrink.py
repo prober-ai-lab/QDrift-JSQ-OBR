@@ -91,7 +91,9 @@ def test_single_device_path_shrinks(monkeypatch) -> None:
         )
         seen.clear()
         pipeline._process_full_layer(recipe, None, "layer", weight, x, z, "cpu", True)
-        expected = _shift(weight, x, z)
+        # DAC forms D and the shrinkage on the deployed input Q_a(z).
+        zq = pipeline._hessian_quantizer(recipe)(z)
+        expected = _shift(weight, x, zq)
         if mode == "row":
-            expected, _ = shrink_drift_weight(expected, weight, x, z, seqlen, "row")
+            expected, _ = shrink_drift_weight(expected, weight, x, zq, seqlen, "row")
         assert torch.allclose(seen["drift"], expected, atol=1e-4)

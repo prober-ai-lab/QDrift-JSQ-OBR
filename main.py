@@ -19,7 +19,9 @@ from benchmark.eval.evaluation import (
 from qdrift.compress.pipeline import compress, compress_regimes, parse_devices
 from qdrift.compress.recipe import (
     CURVATURE,
+    DRIFT_ACT,
     DRIFT_SHRINK,
+    MASK_SELECT,
     MECHANISMS,
     PRUNING_CRITERIA,
     ActivationQuantSpec,
@@ -66,6 +68,7 @@ def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sparsity", type=_sparsity, default=0.5)
     parser.add_argument("--structure", choices=("unstructured", "2:4", "4:8"), default="4:8")
     parser.add_argument("--criterion", choices=PRUNING_CRITERIA, default="wanda")
+    parser.add_argument("--mask-select", choices=MASK_SELECT, default="score", help="N:M/pairwise mask: score=one-shot criterion; obs=each block's legal pattern by its exact compensated cost")
     parser.add_argument("--w-gran", choices=("tensor", "channel", "group"), default="channel")
     parser.add_argument("--w-group-size", "--group-size", dest="w_group_size", type=int, default=128)
     parser.add_argument("--a-gran", choices=("tensor", "token", "group"), default="token")
@@ -78,6 +81,7 @@ def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--comp", choices=("none", "obr", "drift"), default="obr", help="calibration objective: obr=symmetric, drift=QDrift asymmetric")
     parser.add_argument("--mechanism", choices=MECHANISMS, default="obr", help="obr: statistics on full-precision activations; qir: with the outlier tokens runtime-quantized (docs/mechanisms.md)")
     parser.add_argument("--outlier-factor", type=float, default=8.0, help="qir: quantize tokens whose max|z_t| exceeds this times the median (0 = all tokens)")
+    parser.add_argument("--drift-act", choices=DRIFT_ACT, default="prefix", help="drift: where the runtime activation quantizer enters DAC; prefix=replayed prefix and the layer's H/D, layer=H/D only, none=original DAC")
     parser.add_argument("--drift-shrink", choices=DRIFT_SHRINK, default="none", help="drift: shrink DAC's drift term toward OBR by its noise across calibration sequences, per layer or per output row")
     parser.add_argument("--curvature", choices=CURVATURE, default="none", help="fisher: couple the output rows of the compensation through the layer's output curvature (empirical Fisher of the calibration NLL)")
     parser.add_argument("--curvature-damping", type=float, default=1.0, help="damping of the output curvature, relative to its mean diagonal")
@@ -155,6 +159,7 @@ def _build_recipe(args: argparse.Namespace) -> CompressionRecipe:
             sparsity=args.sparsity,
             structure=args.structure,
             criterion=args.criterion,
+            select=args.mask_select,
         ),
         rotation=RotationSpec(mode=args.rotation, seed=args.seed),
         compensation=CompensationSpec(
@@ -163,6 +168,7 @@ def _build_recipe(args: argparse.Namespace) -> CompressionRecipe:
             mechanism=args.mechanism,
             outlier_factor=args.outlier_factor,
             drift_shrink=args.drift_shrink,
+            drift_act=args.drift_act,
             curvature=args.curvature,
             curvature_damping=args.curvature_damping,
             curvature_iters=args.curvature_iters,

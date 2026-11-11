@@ -1,6 +1,7 @@
 # Copyright (c) 2026 QDrift Authors. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""DAC's system Hessian on the runtime-quantized input, ``E[Q_a(z) Q_a(z)^T]``.
+"""DAC on the deployed input ``x_hat = Q_a(z)``: ``H = E[x_hat x_hat^T]`` and
+``D = E[(x_hat - x) x_hat^T]``.
 
     python -m pytest tests/test_dac_hessian.py
 """
@@ -23,6 +24,8 @@ from qdrift.compress.recipe import (  # noqa: E402
     CompensationSpec,
     CompressionRecipe,
 )
+from qdrift.compress.runs import run_name  # noqa: E402
+from qdrift.obr.drift import drift_weight, shrink_drift_weight  # noqa: E402
 from qdrift.quant.activation import fake_quantize_activations  # noqa: E402
 
 
@@ -43,11 +46,17 @@ def test_quantizer_only_for_dac_with_quantized_activations() -> None:
     assert P._hessian_quantizer(
         CompressionRecipe(compensation=CompensationSpec(method="drift", mechanism="qir"))
     ) is None
-    assert P._hessian_quantizer(CompressionRecipe(compensation=CompensationSpec(method="drift"))) is not None
+    assert P._hessian_quantizer(
+        CompressionRecipe(compensation=CompensationSpec(method="drift", drift_act="none"))
+    ) is None
+    for mode in ("prefix", "layer"):
+        assert P._hessian_quantizer(
+            CompressionRecipe(compensation=CompensationSpec(method="drift", drift_act=mode))
+        ) is not None
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-def test_hessian_on_quantized_input_and_drift_on_z(streaming, monkeypatch) -> None:
+def test_hessian_and_drift_on_quantized_input(streaming, monkeypatch) -> None:
     x, z = _inputs()
     recipe = CompressionRecipe(compensation=CompensationSpec(method="drift"))
     quant = P._hessian_quantizer(recipe)
@@ -61,4 +70,31 @@ def test_hessian_on_quantized_input_and_drift_on_z(streaming, monkeypatch) -> No
     assert not torch.allclose(zq, z)
     assert torch.allclose(mask_h, zq.t() @ zq / len(z), atol=1e-5)
     assert torch.allclose(system, zq.t() @ zq / len(z), atol=1e-5)
-    assert torch.allclose(diff, (z - x).t() @ z / len(z), atol=1e-5)
+    assert torch.allclose(diff, (zq - x).t() @ zq / len(z), atol=1e-5)
+
+
+def test_shrinkage_uses_quantized_input() -> None:
+    x, z = _inputs(rows=320)
+    recipe = CompressionRecipe(compensation=CompensationSpec(method="drift", drift_shrink="row"))
+    quant = P._hessian_quantizer(recipe)
+    zq = quant(z)
+    weight = torch.randn(6, z.shape[1], generator=torch.Generator().manual_seed(1))
+    shift = drift_weight(weight, (zq - x).t() @ zq / len(z))
+    got, factor = shrink_drift_weight(shift, weight, x, z, 64, "row", quant)
+    want, want_factor = shrink_drift_weight(shift, weight, x, zq, 64, "row")
+    assert torch.allclose(factor, want_factor) and torch.allclose(got, want)
+
+
+def test_drift_act_is_named_and_round_trips() -> None:
+    for mode, tag in (("prefix", "_qdrift_seed42"), ("layer", "_qdrift-alayer_seed42"), ("none", "_qdrift-anone_seed42")):
+        comp = CompensationSpec(method="drift", drift_act=mode)
+        recipe = CompressionRecipe(compensation=comp)
+        recipe.validate()
+        assert run_name(recipe).endswith(tag)
+        assert CompensationSpec.from_dict(comp.to_dict()) == comp
+    # Records written before drift_act are the original DAC.
+    old = CompensationSpec(method="drift").to_dict()
+    del old["drift_act"]
+    assert CompensationSpec.from_dict(old).drift_act == "none"
+    w2 = CompressionRecipe(activation=ActivationQuantSpec(bits=16), compensation=CompensationSpec(method="drift", drift_act="none"))
+    assert run_name(w2).endswith("_qdrift_seed42")

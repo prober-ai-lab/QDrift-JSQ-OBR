@@ -28,6 +28,10 @@ SPARSITY_VALUES: tuple[float, ...] = tuple(round(index / 10, 1) for index in ran
 PRUNING_CRITERIA: tuple[str, ...] = ("magnitude", "wanda", "sparsegpt")
 MECHANISMS: tuple[str, ...] = ("obr", "qir")
 DRIFT_SHRINK: tuple[str, ...] = ("none", "layer", "row")
+# Where DAC applies the runtime activation quantizer (qdrift.compress.pipeline).
+DRIFT_ACT: tuple[str, ...] = ("prefix", "layer", "none")
+# How the N:M / pairwise mask is chosen (qdrift.prune.select).
+MASK_SELECT: tuple[str, ...] = ("score", "obs")
 CURVATURE: tuple[str, ...] = ("none", "fisher")
 
 
@@ -230,11 +234,17 @@ class KVQuantSpec:
 
 @dataclass(frozen=True)
 class PruneSpec:
-    """Pruning criterion."""
+    """Pruning criterion.
+
+    ``select`` picks how an N:M or pairwise mask is chosen: ``score`` keeps
+    the best-scoring groups in one shot, ``obs`` picks each block's legal
+    pattern by its exact compensated cost (qdrift.prune.select).
+    """
 
     sparsity: float = 0.5
     structure: str = "4:8"
     criterion: str = "wanda"
+    select: str = "score"
 
     def validate(self) -> None:
         if self.sparsity not in SPARSITY_VALUES:
@@ -256,13 +266,20 @@ class PruneSpec:
             raise ValueError("no pruning requires sparsity 0.0")
         if self.criterion not in PRUNING_CRITERIA:
             raise ValueError(f"unknown criterion {self.criterion}")
+        if self.select not in MASK_SELECT:
+            raise ValueError(f"unknown mask selection {self.select}")
+        if self.select != "score" and self.structure not in ("2:4", "4:8"):
+            raise ValueError("obs mask selection needs an N:M structure")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "sparsity": self.sparsity,
             "structure": self.structure,
             "criterion": self.criterion,
         }
+        if self.select != "score":
+            data["select"] = self.select
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PruneSpec:
@@ -270,6 +287,7 @@ class PruneSpec:
             sparsity=round(float(data.get("sparsity", data.get("ratio", 0.5))), 1),
             structure=str(data.get("structure", "4:8")),
             criterion=str(data.get("criterion", "wanda")),
+            select=str(data.get("select", "score")),
         )
 
 
@@ -315,6 +333,12 @@ class CompensationSpec:
     ``curvature_damping`` (relative to its mean diagonal) and solved with
     ``curvature_iters`` conjugate-gradient steps per stage; ``none`` keeps
     OBR's row-wise compensation.
+    ``drift_act`` is where DAC applies the runtime activation quantizer
+    ``Q_a`` (no-op at 16-bit activations and under qir): ``prefix`` replays
+    the compressed prefix with ``Q_a`` on every linear input and forms
+    ``H = E[x_hat x_hat^T]`` and ``D = E[(x_hat - x) x_hat^T]`` on
+    ``x_hat = Q_a(z)``; ``layer`` does the latter only; ``none`` is the
+    original DAC on ``z``.
     """
 
     method: str = "obr"
@@ -326,6 +350,7 @@ class CompensationSpec:
     curvature: str = "none"
     curvature_damping: float = 1.0
     curvature_iters: int = 256
+    drift_act: str = "prefix"
 
     def validate(self) -> None:
         if self.method not in ("none", "obr", "drift"):
@@ -350,6 +375,8 @@ class CompensationSpec:
             raise ValueError("curvature damping must be positive")
         if self.curvature_iters < 0:
             raise ValueError("curvature iterations must be non-negative")
+        if self.drift_act not in DRIFT_ACT:
+            raise ValueError(f"unknown drift activation mode {self.drift_act}")
 
     def mechanism_tag(self) -> str:
         """``obr``, ``qir``, or ``qir-k{kappa}`` for a non-default threshold."""
@@ -375,12 +402,16 @@ class CompensationSpec:
             data["curvature"] = self.curvature
             data["curvature_damping"] = self.curvature_damping
             data["curvature_iters"] = self.curvature_iters
+        # Records from before drift_act read back as the original DAC.
+        if self.method == "drift":
+            data["drift_act"] = self.drift_act
         return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CompensationSpec:
+        method = str(data.get("method", "obr"))
         return cls(
-            method=str(data.get("method", "obr")),
+            method=method,
             alpha=float(data.get("alpha", 0.5)),
             damping=float(data.get("damping", 0.01)),
             mechanism=str(data.get("mechanism", "obr")),
@@ -389,6 +420,7 @@ class CompensationSpec:
             curvature=str(data.get("curvature", "none")),
             curvature_damping=float(data.get("curvature_damping", 1.0)),
             curvature_iters=int(data.get("curvature_iters", 256)),
+            drift_act=str(data.get("drift_act", "none" if method == "drift" else "prefix")),
         )
 
 

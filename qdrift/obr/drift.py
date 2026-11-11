@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import torch
 
 from qdrift.obr.calibrate import capture_inputs
@@ -35,6 +37,7 @@ def shrink_drift_weight(
     compressed_input: torch.Tensor,
     seqlen: int,
     mode: str,
+    act_quant: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """James-Stein shrinkage of the drift term ``shift = W D`` toward OBR.
 
@@ -43,6 +46,7 @@ def shrink_drift_weight(
     variance is ``sum_s ||W D_s - shift||^2 / (S (S - 1))``.  Each output row
     (``row``) or the whole layer (``layer``) is scaled by
     ``max(0, 1 - variance / ||shift||^2)``: 1 keeps DAC, 0 falls back to OBR.
+    ``act_quant`` maps ``z_hat`` to the deployed input first, as for ``D``.
     Returns the shrunk term and the factors (one per row).
     """
     count = compressed_input.shape[0] // seqlen
@@ -52,6 +56,8 @@ def shrink_drift_weight(
     for index in range(count):
         rows = slice(index * seqlen, (index + 1) * seqlen)
         z_hat = compressed_input[rows].to(device=shift.device, dtype=torch.float32)
+        if act_quant is not None:
+            z_hat = act_quant(z_hat)
         x = fp_input[rows].to(device=shift.device, dtype=torch.float32)
         per_sequence = ((z_hat - x) @ weight.t()).t() @ z_hat / seqlen
         squares += per_sequence.double().pow(2).sum(dim=1)

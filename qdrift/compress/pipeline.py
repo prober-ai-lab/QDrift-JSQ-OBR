@@ -59,6 +59,7 @@ from qdrift.prune.criteria import (
     wanda_score,
 )
 from qdrift.prune.mask import mask_from_score
+from qdrift.prune.select import obs_mask
 from qdrift.quant.gptq import gptq_quantize, rtn_quantize
 from qdrift.quant.activation import fake_quantize_activations, quantize_outlier_tokens
 from qdrift.quant.pack import pack_codes
@@ -87,14 +88,17 @@ _HESSIAN_STREAM_ROWS = 4096
 def _hessian_quantizer(
     recipe: CompressionRecipe,
 ) -> Callable[[torch.Tensor], torch.Tensor] | None:
-    """DAC's ``H_hat = E[Q_a(z) Q_a(z)^T]``: the deployed layer reads its
-    input through the runtime activation quantizer, so the system Hessian is
-    formed on ``Q_a(z)``; the drift ``D = E[(z - x) z^T]`` keeps ``z``.  None
-    for OBR, 16-bit activations, and qir (which quantizes its own inputs)."""
+    """DAC's ``Q_a``: the deployed layer computes ``W_hat Q_a(z)``, so the
+    objective ``E||W_hat x_hat - W x||^2`` has ``x_hat = Q_a(z)`` in both
+    ``H = E[x_hat x_hat^T]`` and ``D = E[(x_hat - x) x_hat^T]`` (the rounding
+    noise then enters as a ridge on ``H`` only; docs/method-derivation.md).
+    None for OBR, ``drift_act`` none, 16-bit activations, and qir (which
+    quantizes its own inputs)."""
     act = recipe.activation
     comp = recipe.compensation
     if (
         comp.method != "drift"
+        or comp.drift_act == "none"
         or act.bits >= 16
         or get_mechanism(comp.mechanism, comp.outlier_factor).quantizes_inputs
     ):
@@ -112,7 +116,7 @@ def _hessians_streaming(
     act_quant: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
     """Accumulate the mask/system Hessian and the asymmetric drift matrix
-    (the Hessian on ``act_quant(z_hat)`` when given)."""
+    (both on ``act_quant(z_hat)`` when given)."""
     total = int(fp_input.shape[0])
     width = int(fp_input.shape[-1])
     # The mask/system Hessian uses the compressed path when it is available.
@@ -122,9 +126,9 @@ def _hessians_streaming(
     for start in range(0, total, _HESSIAN_STREAM_ROWS):
         end = min(start + _HESSIAN_STREAM_ROWS, total)
         zhat = source[start:end].to(device=device, dtype=torch.float32)
-        zq = act_quant(zhat) if act_quant is not None else zhat
-        hessian.add_(zq.t() @ zq)
-        del zq
+        if act_quant is not None and compressed_input is not None:
+            zhat = act_quant(zhat)
+        hessian.add_(zhat.t() @ zhat)
         if hessian_diff is not None:
             zfp = fp_input[start:end].to(device=device, dtype=torch.float32)
             hessian_diff.add_((zhat - zfp).t() @ zhat)
@@ -164,6 +168,19 @@ def _score(
     raise ValueError(f"unknown criterion {criterion}")
 
 
+def _unconstrained_target(
+    weight: torch.Tensor,
+    system: torch.Tensor,
+    drift_weight: torch.Tensor | None,
+) -> torch.Tensor:
+    """Each row's unconstrained optimum ``w*``: ``W`` for OBR, ``W - W D H^-1``
+    for DAC (``drift_weight = W D``)."""
+    if drift_weight is None:
+        return weight
+    factor = torch.linalg.cholesky(system)
+    return weight - torch.cholesky_solve(drift_weight.t().to(factor.dtype), factor).t()
+
+
 def _pack_mask(mask: torch.Tensor) -> torch.Tensor:
     rows, cols = mask.shape
     mask_bits = mask.to(torch.uint8)
@@ -189,9 +206,9 @@ def _hessians(
     if fp_input is None:
         return None, None, None
     if compressed_input is not None:
-        hessian_hat = _hessian_from_inputs(
-            act_quant(compressed_input) if act_quant is not None else compressed_input
-        )
+        if act_quant is not None:
+            compressed_input = act_quant(compressed_input)
+        hessian_hat = _hessian_from_inputs(compressed_input)
         hessian_diff = (
             (compressed_input - fp_input).t()
             @ compressed_input
@@ -300,7 +317,16 @@ def _quantize_layer(
                 if pairwise_ratio <= recipe.pairwise_threshold
                 else base_structure
             )
-        mask = mask_from_score(score, recipe.prune.sparsity, structure)
+        if recipe.prune.select == "obs":
+            if hessian_system is None:
+                raise ValueError("obs mask selection needs the layer Hessian")
+            mask = obs_mask(
+                _unconstrained_target(weight_rot, hessian_system, drift_weight),
+                hessian_system,
+                structure,
+            )
+        else:
+            mask = mask_from_score(score, recipe.prune.sparsity, structure)
     else:
         mask = mask_from_score(
             score,
@@ -719,7 +745,8 @@ def _drift_term(
     if mode == "none":
         return shift
     shift, factor = shrink_drift_weight(
-        shift, weight, fp_input, compressed_input, recipe.seqlen, mode
+        shift, weight, fp_input, compressed_input, recipe.seqlen, mode,
+        _hessian_quantizer(recipe),
     )
     print(
         f"{name} drift shrink ({mode}): factor mean {float(factor.mean()):.3f} "
@@ -824,6 +851,10 @@ def compress(
         recipe.compensation.mechanism, recipe.compensation.outlier_factor
     )
     quantize_acts = recipe.compensation.method != "none" and mechanism.quantizes_inputs
+    # DAC's deployed prefix: every compressed linear reads Q_a of its input.
+    replay_quantized = quantize_acts or (
+        _hessian_quantizer(recipe) is not None and recipe.compensation.drift_act == "prefix"
+    )
     act = recipe.activation
     act_args = (
         act.bits,
@@ -840,7 +871,7 @@ def compress(
         return SequentialCalibration(
             model,
             calibration,
-            act_quant if quantize_acts else None,
+            act_quant if replay_quantized else None,
             layers.values(),
         )
 
