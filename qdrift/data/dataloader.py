@@ -1,6 +1,6 @@
 # Copyright (c) 2026 QDrift Authors. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Calibration and PPL data loading: WikiText-2 and Pile."""
+"""Calibration and PPL data loading: WikiText-2 (train / validation / test) and Pile."""
 
 from __future__ import annotations
 
@@ -18,9 +18,11 @@ __all__ = [
 ]
 
 CALIBRATION_DATASET = "wikitext2"
-PPL_DATASETS = ("wikitext2",)
-# Splits used for PPL, following the GPTQ / OBR / QuaRot convention.
-PPL_SPLITS = {"wikitext2": "test"}
+# ``wikitext2`` (test) is the reported PPL, following the GPTQ / OBR / QuaRot
+# convention; ``wikitext2_val`` (validation) is for design decisions, so the
+# test split is not tuned on.
+PPL_DATASETS = ("wikitext2", "wikitext2_val")
+PPL_SPLITS = {"wikitext2": "test", "wikitext2_val": "validation"}
 
 
 def _join_text(dataset: datasets.Dataset, key: str = "text") -> str:
@@ -66,13 +68,14 @@ def get_wikitext2(
     tokenizer: PreTrainedTokenizerBase,
     eval_mode: bool = False,
     seed: int = 0,
+    split: str = PPL_SPLITS["wikitext2"],
 ) -> list[torch.Tensor]:
-    """Load WikiText-2 calibration (train) or PPL (test) chunks."""
+    """Load WikiText-2 calibration (train) or PPL (``split``) chunks."""
     if eval_mode:
         data = datasets.load_dataset(
             "Salesforce/wikitext",
             "wikitext-2-raw-v1",
-            split=PPL_SPLITS["wikitext2"],
+            split=split,
         )
         # Keep the empty lines: the standard test stream joins every row.
         ids = tokenizer("\n\n".join(data["text"])).input_ids
@@ -114,6 +117,10 @@ def get_loaders(
     """
     if dataset == "wikitext2":
         return get_wikitext2(nsamples, seqlen, tokenizer, eval_mode, seed)
+    if dataset == "wikitext2_val":
+        if not eval_mode:
+            raise ValueError("wikitext2_val is for evaluation only; calibrate on wikitext2")
+        return get_wikitext2(nsamples, seqlen, tokenizer, True, seed, PPL_SPLITS["wikitext2_val"])
     if dataset == "pile":
         if eval_mode:
             raise ValueError("pile only supports calibration")

@@ -20,6 +20,7 @@ from qdrift.compress.pipeline import compress, compress_regimes, parse_devices
 from qdrift.compress.recipe import (
     CURVATURE,
     DRIFT_ACT,
+    DRIFT_RIDGE,
     DRIFT_SHRINK,
     MASK_SELECT,
     MECHANISMS,
@@ -81,7 +82,8 @@ def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--comp", choices=("none", "obr", "drift"), default="obr", help="calibration objective: obr=symmetric, drift=QDrift asymmetric")
     parser.add_argument("--mechanism", choices=MECHANISMS, default="obr", help="obr: statistics on full-precision activations; qir: with the outlier tokens runtime-quantized (docs/mechanisms.md)")
     parser.add_argument("--outlier-factor", type=float, default=8.0, help="qir: quantize tokens whose max|z_t| exceeds this times the median (0 = all tokens)")
-    parser.add_argument("--drift-act", choices=DRIFT_ACT, default="prefix", help="drift: where the runtime activation quantizer enters DAC; prefix=replayed prefix and the layer's H/D, layer=H/D only, none=original DAC")
+    parser.add_argument("--drift-act", choices=DRIFT_ACT, default="none", help="drift: where the runtime activation quantizer enters DAC; none=full-precision activations (default), layer=H/D on Q_a(z), prefix=also the replayed prefix (ablations)")
+    parser.add_argument("--drift-ridge", choices=DRIFT_RIDGE, default="none", help="drift: cv=ridge on DAC's drift regression chosen per layer by cross-validation over calibration sequences")
     parser.add_argument("--drift-shrink", choices=DRIFT_SHRINK, default="none", help="drift: shrink DAC's drift term toward OBR by its noise across calibration sequences, per layer or per output row")
     parser.add_argument("--curvature", choices=CURVATURE, default="none", help="fisher: couple the output rows of the compensation through the layer's output curvature (empirical Fisher of the calibration NLL)")
     parser.add_argument("--curvature-damping", type=float, default=1.0, help="damping of the output curvature, relative to its mean diagonal")
@@ -169,6 +171,7 @@ def _build_recipe(args: argparse.Namespace) -> CompressionRecipe:
             outlier_factor=args.outlier_factor,
             drift_shrink=args.drift_shrink,
             drift_act=args.drift_act,
+            drift_ridge=args.drift_ridge,
             curvature=args.curvature,
             curvature_damping=args.curvature_damping,
             curvature_iters=args.curvature_iters,
@@ -204,7 +207,7 @@ def _compress(args: argparse.Namespace, recipe: CompressionRecipe) -> int:
 def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     # fmt: off
     parser.add_argument("--overwrite", action="store_true", help="replace an existing v2 checkpoint/result of the same name")
-    parser.add_argument("--ppl", action=argparse.BooleanOptionalAction, default=True, help="evaluate WikiText-2 (full test) PPL at 2048 tokens")
+    parser.add_argument("--ppl", action=argparse.BooleanOptionalAction, default=True, help="evaluate WikiText-2 PPL at 2048 tokens: test (reported) and validation (for design decisions)")
     parser.add_argument("--eval-batch-size", type=int, default=2)
     parser.add_argument("--zeroshot", action=argparse.BooleanOptionalAction, default=False, help="evaluate the lm-eval zero-shot tasks")
     parser.add_argument("--lm-eval-tasks", default=",".join(ZEROSHOT_TASKS))

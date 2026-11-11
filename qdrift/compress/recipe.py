@@ -29,7 +29,9 @@ PRUNING_CRITERIA: tuple[str, ...] = ("magnitude", "wanda", "sparsegpt")
 MECHANISMS: tuple[str, ...] = ("obr", "qir")
 DRIFT_SHRINK: tuple[str, ...] = ("none", "layer", "row")
 # Where DAC applies the runtime activation quantizer (qdrift.compress.pipeline).
-DRIFT_ACT: tuple[str, ...] = ("prefix", "layer", "none")
+DRIFT_ACT: tuple[str, ...] = ("none", "layer", "prefix")
+# How DAC estimates its drift regression (qdrift.obr.drift.ridge_drift_weight).
+DRIFT_RIDGE: tuple[str, ...] = ("none", "cv")
 # How the N:M / pairwise mask is chosen (qdrift.prune.select).
 MASK_SELECT: tuple[str, ...] = ("score", "obs")
 CURVATURE: tuple[str, ...] = ("none", "fisher")
@@ -334,11 +336,15 @@ class CompensationSpec:
     ``curvature_iters`` conjugate-gradient steps per stage; ``none`` keeps
     OBR's row-wise compensation.
     ``drift_act`` is where DAC applies the runtime activation quantizer
-    ``Q_a`` (no-op at 16-bit activations and under qir): ``prefix`` replays
-    the compressed prefix with ``Q_a`` on every linear input and forms
-    ``H = E[x_hat x_hat^T]`` and ``D = E[(x_hat - x) x_hat^T]`` on
-    ``x_hat = Q_a(z)``; ``layer`` does the latter only; ``none`` is the
-    original DAC on ``z``.
+    ``Q_a`` (no-op at 16-bit activations and under qir): ``none`` (default)
+    is the original DAC on the full-precision activations ``z``; ``layer``
+    forms ``H = E[x_hat x_hat^T]`` and ``D = E[(x_hat - x) x_hat^T]`` on
+    ``x_hat = Q_a(z)``; ``prefix`` also replays the compressed prefix with
+    ``Q_a`` on every linear input.  Both overfit short calibration sets
+    (docs/dac-revision.md) and are kept as ablations.
+    ``drift_ridge`` ``cv`` replaces DAC's drift regression ``D H^-1`` by
+    ``D (H + c g I)^-1`` with ``c`` chosen per layer by cross-validation over
+    calibration sequences (``c = inf`` is OBR); ``none`` keeps DAC's.
     """
 
     method: str = "obr"
@@ -350,7 +356,8 @@ class CompensationSpec:
     curvature: str = "none"
     curvature_damping: float = 1.0
     curvature_iters: int = 256
-    drift_act: str = "prefix"
+    drift_act: str = "none"
+    drift_ridge: str = "none"
 
     def validate(self) -> None:
         if self.method not in ("none", "obr", "drift"):
@@ -377,6 +384,12 @@ class CompensationSpec:
             raise ValueError("curvature iterations must be non-negative")
         if self.drift_act not in DRIFT_ACT:
             raise ValueError(f"unknown drift activation mode {self.drift_act}")
+        if self.drift_ridge not in DRIFT_RIDGE:
+            raise ValueError(f"unknown drift ridge {self.drift_ridge}")
+        if self.drift_ridge != "none" and self.method != "drift":
+            raise ValueError("the drift ridge needs --comp drift")
+        if self.drift_ridge != "none" and self.drift_shrink != "none":
+            raise ValueError("use either the drift ridge or drift shrinkage, not both")
 
     def mechanism_tag(self) -> str:
         """``obr``, ``qir``, or ``qir-k{kappa}`` for a non-default threshold."""
@@ -402,9 +415,10 @@ class CompensationSpec:
             data["curvature"] = self.curvature
             data["curvature_damping"] = self.curvature_damping
             data["curvature_iters"] = self.curvature_iters
-        # Records from before drift_act read back as the original DAC.
-        if self.method == "drift":
+        if self.drift_act != "none":
             data["drift_act"] = self.drift_act
+        if self.drift_ridge != "none":
+            data["drift_ridge"] = self.drift_ridge
         return data
 
     @classmethod
@@ -420,7 +434,8 @@ class CompensationSpec:
             curvature=str(data.get("curvature", "none")),
             curvature_damping=float(data.get("curvature_damping", 1.0)),
             curvature_iters=int(data.get("curvature_iters", 256)),
-            drift_act=str(data.get("drift_act", "none" if method == "drift" else "prefix")),
+            drift_act=str(data.get("drift_act", "none")),
+            drift_ridge=str(data.get("drift_ridge", "none")),
         )
 
 

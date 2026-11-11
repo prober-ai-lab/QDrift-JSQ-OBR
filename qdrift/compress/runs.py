@@ -58,7 +58,8 @@ def pattern_tag(recipe: CompressionRecipe) -> str:
 
 def calibration_tag(recipe: CompressionRecipe) -> str:
     """``qdrift`` / ``seq`` / ``nocomp``, with DAC's activation mode when it is
-    not ``prefix`` (``-alayer`` / ``-anone``), DAC's drift shrinkage and the
+    not ``none`` (``-alayer`` / ``-aprefix``), its drift ridge (``-cvr``), its
+    drift shrinkage and the
     output curvature appended (``-fisher``, plus its damping and iterations
     when they are not the defaults)."""
     comp = recipe.compensation
@@ -66,10 +67,12 @@ def calibration_tag(recipe: CompressionRecipe) -> str:
     if (
         comp.method == "drift"
         and comp.mechanism == "obr"
-        and comp.drift_act != "prefix"
+        and comp.drift_act != "none"
         and recipe.activation.bits < 16
     ):
         tag = f"{tag}-a{comp.drift_act}"
+    if comp.drift_ridge != "none":
+        tag = f"{tag}-{comp.drift_ridge}r"
     if comp.drift_shrink != "none":
         tag = f"{tag}-js{comp.drift_shrink}"
     if comp.curvature != "none":

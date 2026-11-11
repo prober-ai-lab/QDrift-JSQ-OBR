@@ -58,7 +58,7 @@ def test_quantizer_only_for_dac_with_quantized_activations() -> None:
 @pytest.mark.parametrize("streaming", [False, True])
 def test_hessian_and_drift_on_quantized_input(streaming, monkeypatch) -> None:
     x, z = _inputs()
-    recipe = CompressionRecipe(compensation=CompensationSpec(method="drift"))
+    recipe = CompressionRecipe(compensation=CompensationSpec(method="drift", drift_act="layer"))
     quant = P._hessian_quantizer(recipe)
     if streaming:
         monkeypatch.setattr(P, "_HESSIAN_STREAM_ROWS", 64)
@@ -75,7 +75,9 @@ def test_hessian_and_drift_on_quantized_input(streaming, monkeypatch) -> None:
 
 def test_shrinkage_uses_quantized_input() -> None:
     x, z = _inputs(rows=320)
-    recipe = CompressionRecipe(compensation=CompensationSpec(method="drift", drift_shrink="row"))
+    recipe = CompressionRecipe(
+        compensation=CompensationSpec(method="drift", drift_act="layer", drift_shrink="row")
+    )
     quant = P._hessian_quantizer(recipe)
     zq = quant(z)
     weight = torch.randn(6, z.shape[1], generator=torch.Generator().manual_seed(1))
@@ -86,15 +88,14 @@ def test_shrinkage_uses_quantized_input() -> None:
 
 
 def test_drift_act_is_named_and_round_trips() -> None:
-    for mode, tag in (("prefix", "_qdrift_seed42"), ("layer", "_qdrift-alayer_seed42"), ("none", "_qdrift-anone_seed42")):
+    for mode, tag in (("none", "_qdrift_seed42"), ("layer", "_qdrift-alayer_seed42"), ("prefix", "_qdrift-aprefix_seed42")):
         comp = CompensationSpec(method="drift", drift_act=mode)
         recipe = CompressionRecipe(compensation=comp)
         recipe.validate()
         assert run_name(recipe).endswith(tag)
         assert CompensationSpec.from_dict(comp.to_dict()) == comp
-    # Records written before drift_act are the original DAC.
-    old = CompensationSpec(method="drift").to_dict()
-    del old["drift_act"]
-    assert CompensationSpec.from_dict(old).drift_act == "none"
-    w2 = CompressionRecipe(activation=ActivationQuantSpec(bits=16), compensation=CompensationSpec(method="drift", drift_act="none"))
+    # Records written before drift_act are the original DAC, the default.
+    assert "drift_act" not in CompensationSpec(method="drift").to_dict()
+    assert CompensationSpec.from_dict({"method": "drift"}).drift_act == "none"
+    w2 = CompressionRecipe(activation=ActivationQuantSpec(bits=16), compensation=CompensationSpec(method="drift", drift_act="layer"))
     assert run_name(w2).endswith("_qdrift_seed42")

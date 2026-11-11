@@ -50,7 +50,7 @@ from qdrift.obr.calibrate import (
     layer_groups,
 )
 from qdrift.obr.curvature import collect_output_curvature, normalize_curvature
-from qdrift.obr.drift import drift_weight, shrink_drift_weight
+from qdrift.obr.drift import drift_weight, ridge_drift_weight, shrink_drift_weight
 from qdrift.obr.obr import compensate_pruning_error, split_mask
 from qdrift.prune.criteria import (
     hessian_inverse_diag,
@@ -739,7 +739,16 @@ def _drift_term(
     fp_input: torch.Tensor,
     compressed_input: torch.Tensor,
 ) -> torch.Tensor:
-    """``W D``, shrunk toward OBR when the recipe asks for drift shrinkage."""
+    """``W D``, regularized or shrunk toward OBR when the recipe asks for it."""
+    if recipe.compensation.drift_ridge == "cv":
+        shift, info = ridge_drift_weight(
+            weight, fp_input, compressed_input, recipe.seqlen,
+            recipe.compensation.damping, _hessian_quantizer(recipe),
+        )
+        if info["choice"] is not None:
+            cv = " ".join(f"{c:g}:{v:.3f}" for c, v in zip(info["scales"], info["cv"]))
+            print(f"{name} drift ridge: c={info['choice']:g} (cv {cv})", flush=True)
+        return shift
     shift = drift_weight(weight, hessian_diff)
     mode = recipe.compensation.drift_shrink
     if mode == "none":
