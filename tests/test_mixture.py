@@ -74,7 +74,10 @@ def test_mixture_statistics(streaming, mix, monkeypatch) -> None:
     hz, hx, d = z.t() @ z / n, x.t() @ x / n, (z - x).t() @ z / n
     assert torch.allclose(hessian, (1 - c) * hz + c * hx, atol=1e-4)
     assert torch.allclose(system, hessian, atol=1e-4)
-    assert torch.allclose(diff, a * d, atol=1e-4)
+    if a == 0.0:
+        assert diff is None
+    else:
+        assert torch.allclose(diff, a * d, atol=1e-4)
 
 
 @pytest.mark.parametrize("mix", [(1.0, 0.0), (0.5, 0.2), (0.0, 0.6), (0.3, 0.7)])
@@ -86,7 +89,8 @@ def test_target_is_the_mixture_optimum(mix) -> None:
     b = 1.0 - a - c
     weight = torch.randn(6, x.shape[1], generator=torch.Generator().manual_seed(3), dtype=torch.float64)
     hessian, _, diff = P._hessians(x, z, 0.0, mix)
-    got = P._unconstrained_target(weight, hessian, P.drift_weight(weight, diff))
+    drift = P.drift_weight(weight, diff) if diff is not None else None
+    got = P._unconstrained_target(weight, hessian, drift)
     n = len(z)
     hz, hx, xz = z.t() @ z / n, x.t() @ x / n, x.t() @ z / n
     # d/dV: a (V hz - W xz) + b (V hz - W hz) + c (V hx - W hx) = 0
@@ -115,5 +119,10 @@ def test_obr_is_the_zero_mixture(monkeypatch) -> None:
         qparams, "l", weight, x, z, "cpu", True,
     )
     asym = P._process_full_layer(_layer_recipe(CompensationSpec(method="drift")), qparams, "l", weight, x, z, "cpu", True)
-    assert torch.allclose(mix.new_weight.float(), obr.new_weight.float(), atol=1e-6)
+    assert torch.equal(mix.new_weight, obr.new_weight)
+    clean = P._process_full_layer(
+        _layer_recipe(CompensationSpec(method="drift", mix_asym=0.0, mix_clean=1.0)),
+        qparams, "l", weight, z, z, "cpu", True,
+    )
+    assert torch.equal(clean.new_weight, obr.new_weight)
     assert not torch.allclose(asym.new_weight.float(), obr.new_weight.float(), atol=1e-6)

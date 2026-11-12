@@ -88,6 +88,12 @@ def _mix(recipe: CompressionRecipe) -> tuple[float, float]:
     return recipe.compensation.mix_asym, recipe.compensation.mix_clean
 
 
+def _dual_path(recipe: CompressionRecipe) -> bool:
+    """QDrift needs the full-precision stream unless its mixture is OBR's."""
+    comp = recipe.compensation
+    return comp.method == "drift" and (comp.mix_asym > 0.0 or comp.mix_clean > 0.0)
+
+
 def _damped(hessian: torch.Tensor, damping: float) -> torch.Tensor:
     damp = damping * torch.diagonal(hessian).clamp_min(0).mean()
     system = hessian + damp * torch.eye(hessian.shape[0], device=hessian.device, dtype=hessian.dtype)
@@ -331,7 +337,7 @@ def _quantize_layer(
     if recipe.compensation.method != "none":
         if hessian_system is None or hessian_raw is None:
             raise ValueError("compensation requires calibration inputs")
-        if recipe.compensation.method == "drift" and hessian_diff is None:
+        if _dual_path(recipe) and recipe.compensation.mix_asym > 0.0 and hessian_diff is None:
             raise ValueError("QDrift requires dual-path calibration inputs")
         # Under QDrift, hessian_system is the mixture's system and
         # hessian_diff its weighted drift matrix (qdrift.obr.drift).
@@ -771,7 +777,7 @@ def compress(
 
     if need_hessian:
         calibration = capture_calibration_start(model, [], chunks, main_device)
-        if recipe.compensation.method == "drift":
+        if _dual_path(recipe):
             full_precision = FullPrecisionStream(
                 model, calibration, {group.capture for group in groups}
             )
@@ -836,7 +842,7 @@ def compress(
                     chunks,
                     main_device,
                 )[group.capture]
-            if recipe.compensation.method == "drift":
+            if _dual_path(recipe):
                 fp_input = full_precision.inputs(group.capture)
                 compressed_input = calibrated
             else:
