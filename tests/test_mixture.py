@@ -126,3 +126,20 @@ def test_obr_is_the_zero_mixture(monkeypatch) -> None:
     )
     assert torch.equal(clean.new_weight, obr.new_weight)
     assert not torch.allclose(asym.new_weight.float(), obr.new_weight.float(), atol=1e-6)
+
+
+def test_variant_recipes_validate_with_a_mixture() -> None:
+    """The fp16 baselines drop the mixture; every variant must still validate."""
+    from qdrift.compress.recipe import variant_recipes
+
+    recipe = CompressionRecipe(
+        prune=PruneSpec(sparsity=0.5, structure="4:8"),
+        compensation=CompensationSpec(method="drift", mix_asym=0.25, mix_clean=0.25),
+        pairwise_fraction=1.0,
+    )
+    variants = variant_recipes(recipe)
+    for variant in variants.values():
+        variant.validate()
+    assert variants["dense"].compensation.method == "none"
+    assert variants["sparse"].compensation.method == "obr"
+    assert variants["joint"].compensation.mix_asym == 0.25

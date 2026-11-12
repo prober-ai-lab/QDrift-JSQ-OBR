@@ -597,7 +597,9 @@ def fp16_recipe(
         activation=replace(recipe.activation, bits=16),
         kv_cache=replace(recipe.kv_cache, k_bits=16, v_bits=16),
         prune=replace(recipe.prune, sparsity=sparsity, structure=structure),
-        compensation=replace(recipe.compensation, method="none"),
+        compensation=replace(
+            recipe.compensation, method="none", mix_asym=1.0, mix_clean=0.0
+        ),
         pairwise_fraction=0.0,
         pairwise_layers=(),
     )
@@ -622,7 +624,7 @@ def sparse_recipe(recipe: CompressionRecipe) -> CompressionRecipe:
     return replace(
         sparse,
         compensation=replace(
-            recipe.compensation, method="obr", mechanism="obr"
+            recipe.compensation, method="obr", mix_asym=1.0, mix_clean=0.0
         ),
     )
 
