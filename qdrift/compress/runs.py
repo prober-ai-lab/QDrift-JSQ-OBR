@@ -103,7 +103,16 @@ def claim(paths: list[Path], overwrite: bool = False) -> None:
 
 
 def git_rev() -> str:
-    """Commit of the code; ``QDRIFT_REV`` on copies without ``.git``."""
+    """Commit of the deployed code.
+
+    ``QDRIFT_REV`` wins when set: the sync/job wrappers export the true revision
+    on server copies whose ``.git`` is stale (rsync/tar overwrite files but not
+    ``.git``) or absent. Only the dev checkout, with no ``QDRIFT_REV``, reads the
+    local git HEAD.
+    """
+    env = os.environ.get("QDRIFT_REV")
+    if env:
+        return env
     try:
         rev = subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],
@@ -116,7 +125,7 @@ def git_rev() -> str:
         )
         return rev + ("+dirty" if dirty else "")
     except (OSError, subprocess.CalledProcessError):
-        return os.environ.get("QDRIFT_REV", "unknown")
+        return "unknown"
 
 
 def run_metadata(
