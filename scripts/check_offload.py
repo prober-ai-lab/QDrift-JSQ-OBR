@@ -76,10 +76,19 @@ def main() -> int:
     parser.add_argument("--model", default="llama2-7b")
     parser.add_argument("--max-layers", type=int, default=8)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--offload-only", action="store_true",
+                        help="smoke test: run only the offload path (for models too big to fit one GPU)")
     args = parser.parse_args()
 
     recipe = _recipe(args.model, args.max_layers)
     with tempfile.TemporaryDirectory() as tmp:
+        if args.offload_only:
+            off = compress(recipe, device=args.device, output_dir=tmp,
+                           name="offload", offload=True)
+            n = len(load_file(str(off)))
+            print(f"tensors={n}")
+            print("PASS: offload compressed" if n else "FAIL: empty checkpoint")
+            return 0 if n else 1
         on = compress(recipe, device=args.device, output_dir=tmp,
                       name="ondevice", offload=False)
         off = compress(recipe, device=args.device, output_dir=tmp,
