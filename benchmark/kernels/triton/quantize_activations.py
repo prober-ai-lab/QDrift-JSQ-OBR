@@ -102,7 +102,12 @@ def quantize_activations_triton(
         half = 2 ** (bits - 1)
         qmin, qmax, offset = -half, half - 1, 0.0
     else:
-        qmin, qmax, offset = -(2 ** (bits - 1)), 2 ** (bits - 1) - 1, 0.0
+        # Symmetric mid-tread range (-(2^(b-1) - 1) .. 2^(b-1) - 1): the
+        # activation quantizer matches the deployed QuaRot INT4 kernel
+        # (step max|x| / 7, codes -7..7 at 4 bits), so unstructured and
+        # pairwise-4:8 W4A4 share one activation quantizer.
+        qmax = 2 ** (bits - 1) - 1
+        qmin, offset = -qmax, 0.0
     codes = torch.empty((rows, cols), device=x.device, dtype=torch.int8)
     scales = torch.empty((rows, groups), device=x.device, dtype=torch.float32)
     block = triton.next_power_of_2(min(1024, max(32, group)))

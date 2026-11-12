@@ -36,8 +36,15 @@ def _quantize_codes(
     bits: int,
     grid: str,
     group_size: int,
+    symmetric: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, int, float]:
-    """Return INT8 codes, per-group scales, group size and grid offset."""
+    """Return INT8 codes, per-group scales, group size and grid offset.
+
+    ``symmetric`` drops the extra negative code (``qmin = -qmax``) so the
+    mid-tread range is ``-(2^(b-1) - 1) .. 2^(b-1) - 1``.  Activations use it
+    to match the deployed QuaRot INT4 kernel (step max|x| / 7 at 4 bits);
+    weights keep the full asymmetric range.
+    """
     rows, cols = values.shape
     if bits < 1 or bits > 8:
         raise ValueError(f"unsupported bit width {bits}")
@@ -62,6 +69,8 @@ def _quantize_codes(
         offset = 0.0
     else:
         qmin, qmax, offset = qrange(bits, grid)
+        if symmetric:
+            qmin = -qmax
         limit = _qmax(qmin, qmax)
         scales = amax / limit
         if grid == "midrise":
@@ -103,7 +112,9 @@ def quantize_activations(
         group = x.shape[1]
     if group <= 0 or group > x.shape[1]:
         group = x.shape[1]
-    codes, scales, actual_group, offset = _quantize_codes(x, bits, grid, group)
+    codes, scales, actual_group, offset = _quantize_codes(
+        x, bits, grid, group, symmetric=True
+    )
     return codes, scales, actual_group, offset
 
 
