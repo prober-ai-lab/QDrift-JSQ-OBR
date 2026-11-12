@@ -43,8 +43,8 @@ DIVERGING = LinearSegmentedColormap.from_list(
     ["#0d366b", "#2a78d6", "#9ec5f4", NEUTRAL, "#f2a3a2", "#e34948", "#8f1f1e"],
 )
 
-COMP_LABEL = {"none": "no compensation", "obr": "OBR", "drift": "DriftOBR", "qir": "QIR"}
-COMP_COLOR = {"none": MUTED, "obr": SERIES[0], "drift": SERIES[1], "qir": SERIES[2]}
+COMP_LABEL = {"none": "no compensation", "obr": "OBR", "drift": "QDrift"}
+COMP_COLOR = {"none": MUTED, "obr": SERIES[0], "drift": SERIES[1]}
 GRID_LABEL = {"midrise": "mid-rise", "midtread": "mid-tread"}
 GRID_COLOR = {"midrise": SERIES[0], "midtread": SERIES[1]}
 TYPE_ORDER = ("q", "k", "v", "o", "gate", "up", "down")

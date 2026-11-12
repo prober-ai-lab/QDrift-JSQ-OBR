@@ -28,14 +28,10 @@ class LayerStats:
         system: OBR's damped system ``H + damping * mean(diag H) I``.
         raw: the matrix OBR uses for cross terms; the pipeline passes
             ``system`` (off-diagonal blocks are those of ``H``).
-        diff: the drift matrix ``E[(z - x) z^T]``, ``x`` the input the
-            target output is computed on; None when ``z = x``.
+        diff: QDrift's weighted drift matrix ``alpha E[(z - x) z^T]``,
+            ``x`` the full-precision input; None for OBR.
         drift_weight: ``w @ diff`` for these rows when precomputed, else None.
         damping: OBR's relative damping.
-        curvature: the normalized, damped output curvature ``G`` of the
-            layer (qdrift.obr.curvature), whole layer only; None keeps the
-            row-wise compensation.
-        curvature_iters: conjugate-gradient steps per stage for ``curvature``.
     """
 
     mean_diag: float
@@ -44,8 +40,6 @@ class LayerStats:
     diff: torch.Tensor | None = None
     drift_weight: torch.Tensor | None = None
     damping: float = 0.01
-    curvature: torch.Tensor | None = None
-    curvature_iters: int = 0
 
 
 @dataclass
@@ -68,11 +62,6 @@ class Mechanism(ABC):
     """A pruning + quantization compensation mechanism."""
 
     name: str = ""
-    # Whether calibration replays the prefix with the runtime activation
-    # quantizer and hands the layer Q_a(z) on the tokens whose max|z_t|
-    # exceeds ``outlier_factor`` times the median, z elsewhere.
-    quantizes_inputs: bool = False
-    outlier_factor: float = 0.0
 
     @abstractmethod
     def compensate(

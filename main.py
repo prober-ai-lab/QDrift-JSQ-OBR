@@ -18,12 +18,7 @@ from benchmark.eval.evaluation import (
 )
 from qdrift.compress.pipeline import compress, compress_regimes, parse_devices
 from qdrift.compress.recipe import (
-    CURVATURE,
-    DRIFT_ACT,
-    DRIFT_RIDGE,
-    DRIFT_SHRINK,
     MASK_SELECT,
-    MECHANISMS,
     PRUNING_CRITERIA,
     ActivationQuantSpec,
     CompensationSpec,
@@ -79,15 +74,9 @@ def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--kv-grid", choices=("midrise", "midtread"), default=None, help="KV-cache grid (default: --grid)")
     parser.add_argument("--range", choices=("full", "clip"), default="clip")
     parser.add_argument("--quant", choices=("rtn", "gptq"), default="gptq")
-    parser.add_argument("--comp", choices=("none", "obr", "drift"), default="obr", help="calibration objective: obr=symmetric, drift=QDrift asymmetric")
-    parser.add_argument("--mechanism", choices=MECHANISMS, default="obr", help="obr: statistics on full-precision activations; qir: with the outlier tokens runtime-quantized (docs/mechanisms.md)")
-    parser.add_argument("--outlier-factor", type=float, default=8.0, help="qir: quantize tokens whose max|z_t| exceeds this times the median (0 = all tokens)")
-    parser.add_argument("--drift-act", choices=DRIFT_ACT, default="none", help="drift: where the runtime activation quantizer enters DAC; none=full-precision activations (default), layer=H/D on Q_a(z), prefix=also the replayed prefix (ablations)")
-    parser.add_argument("--drift-ridge", choices=DRIFT_RIDGE, default="none", help="drift: cv=ridge on DAC's drift regression chosen per layer by cross-validation over calibration sequences")
-    parser.add_argument("--drift-shrink", choices=DRIFT_SHRINK, default="none", help="drift: shrink DAC's drift term toward OBR by its noise across calibration sequences, per layer or per output row")
-    parser.add_argument("--curvature", choices=CURVATURE, default="none", help="fisher: couple the output rows of the compensation through the layer's output curvature (empirical Fisher of the calibration NLL)")
-    parser.add_argument("--curvature-damping", type=float, default=1.0, help="damping of the output curvature, relative to its mean diagonal")
-    parser.add_argument("--curvature-iters", type=int, default=256, help="conjugate-gradient steps per compensation stage for --curvature")
+    parser.add_argument("--comp", choices=("none", "obr", "drift"), default="obr", help="calibration objective: obr=OBR (symmetric on the drifted input), drift=QDrift's mixture (--mix-asym, --mix-clean)")
+    parser.add_argument("--mix-asym", type=float, default=1.0, help="drift: weight alpha of the asymmetric target E||W_hat X_hat - W X||^2 (1 with --mix-clean 0 = original DAC)")
+    parser.add_argument("--mix-clean", type=float, default=0.0, help="drift: weight gamma of the clean-input target E||W_hat X - W X||^2; the symmetric target gets 1 - alpha - gamma (0, 0 = OBR)")
     parser.add_argument("--rotation", choices=("hadamard", "none"), default="hadamard", help="hadamard=fast global Hadamard; none=identity")
     parser.add_argument("--nsamples", type=int, default=128)
     parser.add_argument("--seqlen", type=int, default=2048)
@@ -167,14 +156,8 @@ def _build_recipe(args: argparse.Namespace) -> CompressionRecipe:
         compensation=CompensationSpec(
             method=args.comp,
             damping=args.damping,
-            mechanism=args.mechanism,
-            outlier_factor=args.outlier_factor,
-            drift_shrink=args.drift_shrink,
-            drift_act=args.drift_act,
-            drift_ridge=args.drift_ridge,
-            curvature=args.curvature,
-            curvature_damping=args.curvature_damping,
-            curvature_iters=args.curvature_iters,
+            mix_asym=args.mix_asym,
+            mix_clean=args.mix_clean,
         ),
         nsamples=args.nsamples,
         seqlen=args.seqlen,

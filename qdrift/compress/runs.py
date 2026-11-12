@@ -57,31 +57,10 @@ def pattern_tag(recipe: CompressionRecipe) -> str:
 
 
 def calibration_tag(recipe: CompressionRecipe) -> str:
-    """``qdrift`` / ``seq`` / ``nocomp``, with DAC's activation mode when it is
-    not ``none`` (``-alayer`` / ``-aprefix``), its drift ridge (``-cvr``), its
-    drift shrinkage and the
-    output curvature appended (``-fisher``, plus its damping and iterations
-    when they are not the defaults)."""
+    """``qdrift`` / ``seq`` / ``nocomp``; QDrift's non-default mixture weights
+    are appended as ``-a{alpha}c{gamma}`` (``qdrift-a0c0`` is OBR's objective)."""
     comp = recipe.compensation
-    tag = CALIBRATION_TAGS[comp.method]
-    if (
-        comp.method == "drift"
-        and comp.mechanism == "obr"
-        and comp.drift_act != "none"
-        and recipe.activation.bits < 16
-    ):
-        tag = f"{tag}-a{comp.drift_act}"
-    if comp.drift_ridge != "none":
-        tag = f"{tag}-{comp.drift_ridge}r"
-    if comp.drift_shrink != "none":
-        tag = f"{tag}-js{comp.drift_shrink}"
-    if comp.curvature != "none":
-        tag = f"{tag}-{comp.curvature}"
-        if comp.curvature_damping != 1.0:
-            tag = f"{tag}-g{comp.curvature_damping:g}"
-        if comp.curvature_iters != 256:
-            tag = f"{tag}-i{comp.curvature_iters}"
-    return tag
+    return CALIBRATION_TAGS[comp.method] + comp.mix_tag()
 
 
 def run_name(recipe: CompressionRecipe) -> str:

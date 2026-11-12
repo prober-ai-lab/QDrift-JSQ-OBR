@@ -34,7 +34,7 @@ from safetensors.torch import load_file, save_file
 from qdrift.compress.recipe import CompressionRecipe, variant_recipes
 from qdrift.compress.runs import run_metadata
 from qdrift.data.dataloader import make_calibration_chunks
-from qdrift.mechanisms import LayerStats, get_mechanism
+from qdrift.mechanisms import LayerStats, OBRMechanism
 from qdrift.data.tokenizer import load_tokenizer
 from qdrift.models.backbone import load_backbone, quantizable_linear_layers
 from qdrift.models.rotation import (
@@ -49,8 +49,7 @@ from qdrift.obr.calibrate import (
     capture_inputs,
     layer_groups,
 )
-from qdrift.obr.curvature import collect_output_curvature, normalize_curvature
-from qdrift.obr.drift import drift_weight, ridge_drift_weight, shrink_drift_weight
+from qdrift.obr.drift import drift_weight, mixture_hessians
 from qdrift.obr.obr import compensate_pruning_error, split_mask
 from qdrift.prune.criteria import (
     hessian_inverse_diag,
@@ -61,7 +60,6 @@ from qdrift.prune.criteria import (
 from qdrift.prune.mask import mask_from_score
 from qdrift.prune.select import obs_mask
 from qdrift.quant.gptq import gptq_quantize, rtn_quantize
-from qdrift.quant.activation import fake_quantize_activations, quantize_outlier_tokens
 from qdrift.quant.pack import pack_codes
 from qdrift.quant.quantize import dequantize, qrange
 from qdrift.quant.scale import compute_scale
@@ -85,26 +83,15 @@ _STREAM_HESSIAN_ELEMENTS = 1 << 27
 _HESSIAN_STREAM_ROWS = 4096
 
 
-def _hessian_quantizer(
-    recipe: CompressionRecipe,
-) -> Callable[[torch.Tensor], torch.Tensor] | None:
-    """DAC's ``Q_a``: the deployed layer computes ``W_hat Q_a(z)``, so the
-    objective ``E||W_hat x_hat - W x||^2`` has ``x_hat = Q_a(z)`` in both
-    ``H = E[x_hat x_hat^T]`` and ``D = E[(x_hat - x) x_hat^T]`` (the rounding
-    noise then enters as a ridge on ``H`` only; docs/method-derivation.md).
-    None for OBR, ``drift_act`` none, 16-bit activations, and qir (which
-    quantizes its own inputs)."""
-    act = recipe.activation
-    comp = recipe.compensation
-    if (
-        comp.method != "drift"
-        or comp.drift_act == "none"
-        or act.bits >= 16
-        or get_mechanism(comp.mechanism, comp.outlier_factor).quantizes_inputs
-    ):
-        return None
-    args = (act.bits, act.grid, act.granularity.kind, act.granularity.group_size, act.clip_ratio)
-    return lambda values: fake_quantize_activations(values, *args)
+def _mix(recipe: CompressionRecipe) -> tuple[float, float]:
+    """QDrift's mixture weights ``(alpha, gamma)``; only read under ``drift``."""
+    return recipe.compensation.mix_asym, recipe.compensation.mix_clean
+
+
+def _damped(hessian: torch.Tensor, damping: float) -> torch.Tensor:
+    damp = damping * torch.diagonal(hessian).clamp_min(0).mean()
+    system = hessian + damp * torch.eye(hessian.shape[0], device=hessian.device, dtype=hessian.dtype)
+    return 0.5 * (system + system.t())
 
 
 @torch.no_grad()
@@ -113,41 +100,37 @@ def _hessians_streaming(
     compressed_input: torch.Tensor | None,
     damping: float,
     device: str,
-    act_quant: Callable[[torch.Tensor], torch.Tensor] | None = None,
+    mix: tuple[float, float] = (1.0, 0.0),
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-    """Accumulate the mask/system Hessian and the asymmetric drift matrix
-    (both on ``act_quant(z_hat)`` when given)."""
+    """Accumulate the mask/system Hessian and, with a compressed input,
+    QDrift's mixture statistics (qdrift.obr.drift.mixture_hessians)."""
     total = int(fp_input.shape[0])
     width = int(fp_input.shape[-1])
-    # The mask/system Hessian uses the compressed path when it is available.
+    # The Hessian is on the compressed path when it is available.
     source = compressed_input if compressed_input is not None else fp_input
     hessian = torch.zeros(width, width, device=device, dtype=torch.float32)
     hessian_diff = torch.zeros_like(hessian) if compressed_input is not None else None
+    clean = compressed_input is not None and mix[1] > 0.0
+    hessian_fp = torch.zeros_like(hessian) if clean else None
     for start in range(0, total, _HESSIAN_STREAM_ROWS):
         end = min(start + _HESSIAN_STREAM_ROWS, total)
         zhat = source[start:end].to(device=device, dtype=torch.float32)
-        if act_quant is not None and compressed_input is not None:
-            zhat = act_quant(zhat)
         hessian.add_(zhat.t() @ zhat)
         if hessian_diff is not None:
             zfp = fp_input[start:end].to(device=device, dtype=torch.float32)
             hessian_diff.add_((zhat - zfp).t() @ zhat)
+            if hessian_fp is not None:
+                hessian_fp.add_(zfp.t() @ zfp)
             del zfp
         del zhat
     scale = max(total, 1)
     hessian.div_(scale)
     if hessian_diff is not None:
         hessian_diff.div_(scale)
-    hessian_system = hessian
-    mask_hessian = hessian
-    damp = damping * torch.diagonal(hessian_system).clamp_min(0).mean()
-    hessian_system = hessian_system + damp * torch.eye(
-        hessian_system.shape[0],
-        device=hessian_system.device,
-        dtype=hessian_system.dtype,
-    )
-    hessian_system = 0.5 * (hessian_system + hessian_system.t())
-    return mask_hessian, hessian_system, hessian_diff
+        if hessian_fp is not None:
+            hessian_fp.div_(scale)
+        hessian, hessian_diff = mixture_hessians(hessian, hessian_fp, hessian_diff, *mix)
+    return hessian, _damped(hessian, damping), hessian_diff
 
 
 def _score(
@@ -201,34 +184,19 @@ def _hessians(
     fp_input: torch.Tensor | None,
     compressed_input: torch.Tensor | None,
     damping: float,
-    act_quant: Callable[[torch.Tensor], torch.Tensor] | None = None,
+    mix: tuple[float, float] = (1.0, 0.0),
 ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
     if fp_input is None:
         return None, None, None
-    if compressed_input is not None:
-        if act_quant is not None:
-            compressed_input = act_quant(compressed_input)
-        hessian_hat = _hessian_from_inputs(compressed_input)
-        hessian_diff = (
-            (compressed_input - fp_input).t()
-            @ compressed_input
-            / max(fp_input.shape[0], 1)
-        )
-        hessian_system = hessian_hat
-        mask_hessian = hessian_hat
-    else:
-        hessian_fp = _hessian_from_inputs(fp_input)
-        hessian_diff = None
-        hessian_system = hessian_fp
-        mask_hessian = hessian_fp
-    damp = damping * torch.diagonal(hessian_system).clamp_min(0).mean()
-    hessian_system = hessian_system + damp * torch.eye(
-        hessian_system.shape[0],
-        device=hessian_system.device,
-        dtype=hessian_system.dtype,
-    )
-    hessian_system = 0.5 * (hessian_system + hessian_system.t())
-    return mask_hessian, hessian_system, hessian_diff
+    if compressed_input is None:
+        hessian = _hessian_from_inputs(fp_input)
+        return hessian, _damped(hessian, damping), None
+    count = max(fp_input.shape[0], 1)
+    hessian_hat = _hessian_from_inputs(compressed_input)
+    hessian_diff = (compressed_input - fp_input).t() @ compressed_input / count
+    hessian_fp = _hessian_from_inputs(fp_input) if mix[1] > 0.0 else None
+    hessian, hessian_diff = mixture_hessians(hessian_hat, hessian_fp, hessian_diff, *mix)
+    return hessian, _damped(hessian, damping), hessian_diff
 
 
 @dataclass
@@ -268,7 +236,6 @@ def _quantize_layer(
     hessian_raw: torch.Tensor | None,
     hessian_diff: torch.Tensor | None,
     drift_weight: torch.Tensor | None = None,
-    curvature: torch.Tensor | None = None,
 ) -> LayerResult:
     rows, cols = weight.shape
     # Scale is computed independently for this layer from the pre-mask rotated
@@ -345,9 +312,7 @@ def _quantize_layer(
     else:
         retained_scale = None
         quant_scale = full_scale.scale.gather(1, keep)
-    mechanism = get_mechanism(
-        recipe.compensation.mechanism, recipe.compensation.outlier_factor
-    )
+    mechanism = OBRMechanism()
     mean_diag = float(diag.mean()) if hessian_fp is not None else 0.0
     hessian_fp = None
     score = None
@@ -367,9 +332,9 @@ def _quantize_layer(
         if hessian_system is None or hessian_raw is None:
             raise ValueError("compensation requires calibration inputs")
         if recipe.compensation.method == "drift" and hessian_diff is None:
-            raise ValueError("DriftOBR requires dual-path calibration inputs")
-        # hessian_diff is set whenever the solve inputs differ from the
-        # target inputs: QDrift calibration and/or quantized inputs (qir).
+            raise ValueError("QDrift requires dual-path calibration inputs")
+        # Under QDrift, hessian_system is the mixture's system and
+        # hessian_diff its weighted drift matrix (qdrift.obr.drift).
         stats = LayerStats(
             mean_diag=mean_diag,
             system=hessian_system,
@@ -377,15 +342,6 @@ def _quantize_layer(
             diff=hessian_diff,
             drift_weight=drift_weight,
             damping=recipe.compensation.damping,
-            curvature=(
-                normalize_curvature(
-                    curvature.to(device=weight.device, dtype=torch.float32),
-                    recipe.compensation.curvature_damping,
-                )
-                if curvature is not None
-                else None
-            ),
-            curvature_iters=recipe.compensation.curvature_iters,
         )
         # Joint/sparse-quantized checkpoints compensate the quantization error;
         # the fp16 sparse baseline bypasses this function entirely.
@@ -544,7 +500,6 @@ def _process_full_layer(
     compressed_input: torch.Tensor | None,
     device: str,
     need_hessian: bool,
-    curvature: torch.Tensor | None = None,
 ) -> LayerResult:
     torch.cuda.set_device(device)
     local_weight = weight.detach().float().to(device)
@@ -557,7 +512,7 @@ def _process_full_layer(
                 compressed_input,
                 recipe.compensation.damping,
                 device,
-                _hessian_quantizer(recipe),
+                _mix(recipe),
             )
             hessian_raw = hessian_system
         else:
@@ -575,13 +530,13 @@ def _process_full_layer(
                 local_fp,
                 local_hat,
                 recipe.compensation.damping,
-                _hessian_quantizer(recipe),
+                _mix(recipe),
             )
             hessian_raw = hessian_system
     else:
         hessian_fp = hessian_system = hessian_raw = hessian_diff = None
     local_drift = (
-        _drift_term(recipe, name, local_weight, hessian_diff, fp_input, compressed_input)
+        drift_weight(local_weight, hessian_diff)
         if hessian_diff is not None
         else None
     )
@@ -596,7 +551,6 @@ def _process_full_layer(
         hessian_raw,
         hessian_diff,
         local_drift,
-        curvature,
     )
     del local_weight, local_fp, local_hat
     torch.cuda.empty_cache()
@@ -731,40 +685,6 @@ def _pairwise_sensitivity(
     return ratios
 
 
-def _drift_term(
-    recipe: CompressionRecipe,
-    name: str,
-    weight: torch.Tensor,
-    hessian_diff: torch.Tensor,
-    fp_input: torch.Tensor,
-    compressed_input: torch.Tensor,
-) -> torch.Tensor:
-    """``W D``, regularized or shrunk toward OBR when the recipe asks for it."""
-    if recipe.compensation.drift_ridge == "cv":
-        shift, info = ridge_drift_weight(
-            weight, fp_input, compressed_input, recipe.seqlen,
-            recipe.compensation.damping, _hessian_quantizer(recipe),
-        )
-        if info["choice"] is not None:
-            cv = " ".join(f"{c:g}:{v:.3f}" for c, v in zip(info["scales"], info["cv"]))
-            print(f"{name} drift ridge: c={info['choice']:g} (cv {cv})", flush=True)
-        return shift
-    shift = drift_weight(weight, hessian_diff)
-    mode = recipe.compensation.drift_shrink
-    if mode == "none":
-        return shift
-    shift, factor = shrink_drift_weight(
-        shift, weight, fp_input, compressed_input, recipe.seqlen, mode,
-        _hessian_quantizer(recipe),
-    )
-    print(
-        f"{name} drift shrink ({mode}): factor mean {float(factor.mean()):.3f} "
-        f"min {float(factor.min()):.3f} max {float(factor.max()):.3f}",
-        flush=True,
-    )
-    return shift
-
-
 def _batch_chunks(chunks: list[torch.Tensor], batch_size: int) -> list[torch.Tensor]:
     if batch_size <= 1 or not chunks:
         return chunks
@@ -834,14 +754,6 @@ def compress(
     )
     chunks = _batch_chunks(chunks, recipe.batch_size)
     groups = layer_groups(model, layers)
-    curvature: dict[str, torch.Tensor] = {}
-    if recipe.compensation.curvature != "none":
-        # The output curvature is a property of the dense model: collect it
-        # before any layer is compressed.
-        began = time.time()
-        curvature = collect_output_curvature(model, chunks, layers, main_device)
-        print(f"output curvature: {len(curvature)} layers ({time.time() - began:.0f}s)", flush=True)
-
     needs_pairwise_selection = (
         recipe.prune.structure in ("2:4", "4:8")
         and 0.0 < recipe.pairwise_fraction < 1.0
@@ -854,35 +766,8 @@ def compress(
     )
     full_precision: FullPrecisionStream | None = None
     sequential: SequentialCalibration | None = None
-    # qir: the replayed prefix uses the runtime's activation quantizer and the
-    # layer statistics use it on the outlier tokens (docs/mechanisms.md).
-    mechanism = get_mechanism(
-        recipe.compensation.mechanism, recipe.compensation.outlier_factor
-    )
-    quantize_acts = recipe.compensation.method != "none" and mechanism.quantizes_inputs
-    # DAC's deployed prefix: every compressed linear reads Q_a of its input.
-    replay_quantized = quantize_acts or (
-        _hessian_quantizer(recipe) is not None and recipe.compensation.drift_act == "prefix"
-    )
-    act = recipe.activation
-    act_args = (
-        act.bits,
-        act.grid,
-        act.granularity.kind,
-        act.granularity.group_size,
-        act.clip_ratio,
-    )
-
-    def act_quant(values: torch.Tensor) -> torch.Tensor:
-        return fake_quantize_activations(values, *act_args)
-
     def replay() -> SequentialCalibration:
-        return SequentialCalibration(
-            model,
-            calibration,
-            act_quant if replay_quantized else None,
-            layers.values(),
-        )
+        return SequentialCalibration(model, calibration)
 
     if need_hessian:
         calibration = capture_calibration_start(model, [], chunks, main_device)
@@ -923,7 +808,6 @@ def compress(
                 flush=True,
             )
             # Re-run calibration from the start; the sensitivity pass only read inputs.
-            sequential.close()
             sequential = replay()
 
     qparams = qrange(recipe.weight.bits, recipe.weight.grid)
@@ -957,20 +841,11 @@ def compress(
                 compressed_input = calibrated
             else:
                 fp_input = calibrated
-            if quantize_acts:
-                # Solve on z with Q_a applied to its outlier tokens, fit the
-                # output on z (or x under QDrift).
-                compressed_input = quantize_outlier_tokens(
-                    calibrated, mechanism.outlier_factor, *act_args, device=main_device
-                )
 
         results: list[LayerResult] = []
         names = list(group.names)
-        # The curvature couples every row of a layer, so it never splits rows.
-        row_slices = recipe.compensation.curvature == "none"
         if (
-            row_slices
-            and pool.size > 1
+            pool.size > 1
             and len(names) > 1
             and recipe.weight.granularity.kind != "tensor"
         ):
@@ -980,7 +855,7 @@ def compress(
                     compressed_input,
                     recipe.compensation.damping,
                     main_device,
-                    _hessian_quantizer(recipe),
+                    _mix(recipe),
                 )
                 hessian_raw = hessian_system
             else:
@@ -990,7 +865,7 @@ def compress(
             for name in names:
                 weight = layers[name].weight.data.detach().float().to(main_device)
                 local_drift = (
-                    _drift_term(recipe, name, weight, hessian_diff, fp_input, compressed_input)
+                    drift_weight(weight, hessian_diff)
                     if hessian_diff is not None
                     else None
                 )
@@ -1069,7 +944,6 @@ def compress(
                             compressed_input,
                             dev,
                             need_hessian,
-                            curvature.get(name),
                         )
                     )
                 )
@@ -1103,8 +977,7 @@ def compress(
                     flush=True,
                 )
         elif (
-            row_slices
-            and pool.size > 1
+            pool.size > 1
             and len(names) == 1
             and recipe.weight.granularity.kind != "tensor"
             and layers[names[0]].in_features <= 4096
@@ -1121,13 +994,13 @@ def compress(
                     compressed_input,
                     recipe.compensation.damping,
                     main_device,
-                    _hessian_quantizer(recipe),
+                    _mix(recipe),
                 )
                 hessian_raw = hessian_system
             else:
                 hessian_fp = hessian_system = hessian_raw = hessian_diff = None
             local_drift_weight = (
-                _drift_term(recipe, name, weight, hessian_diff, fp_input, compressed_input)
+                drift_weight(weight, hessian_diff)
                 if hessian_diff is not None
                 else None
             )
@@ -1201,7 +1074,6 @@ def compress(
                     compressed_input,
                     main_device,
                     need_hessian,
-                    curvature.pop(name, None),
                 )
                 layers[name].weight.data = result.new_weight.to(
                     device=main_device,
@@ -1232,8 +1104,6 @@ def compress(
                 )
         del fp_input, compressed_input
         torch.cuda.empty_cache()
-    if sequential is not None:
-        sequential.close()
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

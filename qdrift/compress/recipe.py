@@ -26,15 +26,8 @@ from typing import Any
 DEFAULT_CLIP_RHOS: tuple[float, ...] = (0.85, 0.9, 0.95, 1.0)
 SPARSITY_VALUES: tuple[float, ...] = tuple(round(index / 10, 1) for index in range(10))
 PRUNING_CRITERIA: tuple[str, ...] = ("magnitude", "wanda", "sparsegpt")
-MECHANISMS: tuple[str, ...] = ("obr", "qir")
-DRIFT_SHRINK: tuple[str, ...] = ("none", "layer", "row")
-# Where DAC applies the runtime activation quantizer (qdrift.compress.pipeline).
-DRIFT_ACT: tuple[str, ...] = ("none", "layer", "prefix")
-# How DAC estimates its drift regression (qdrift.obr.drift.ridge_drift_weight).
-DRIFT_RIDGE: tuple[str, ...] = ("none", "cv")
 # How the N:M / pairwise mask is chosen (qdrift.prune.select).
 MASK_SELECT: tuple[str, ...] = ("score", "obs")
-CURVATURE: tuple[str, ...] = ("none", "fisher")
 
 
 def _slug(name: str) -> str:
@@ -317,47 +310,27 @@ class RotationSpec:
 
 @dataclass(frozen=True)
 class CompensationSpec:
-    """Calibration objective and compensation mechanism.
+    """Calibration objective of the compensation.
 
-    ``method`` picks the calibration objective: ``obr`` (symmetric, on the
-    sequentially propagated inputs), ``drift`` (QDrift's asymmetric,
-    dual-path calibration) or ``none``.  ``mechanism`` picks how the layer
-    statistics are formed (see qdrift.mechanisms): ``obr`` on the
-    full-precision activations of the compressed path, ``qir`` with the
-    outlier tokens quantized as the runtime quantizes them.
-    ``outlier_factor`` is QIR's threshold kappa (0 quantizes every token).
-    ``drift_shrink`` shrinks DAC's drift term toward OBR by its sampling noise
-    across calibration sequences: ``layer`` (one factor) or ``row`` (one per
-    output row); ``none`` keeps plain DAC.
-    ``curvature`` couples the output rows of the compensation through the
-    output curvature ``G`` (qdrift.obr.curvature): ``fisher`` uses the
-    empirical Fisher of the calibration NLL at each layer output, damped by
-    ``curvature_damping`` (relative to its mean diagonal) and solved with
-    ``curvature_iters`` conjugate-gradient steps per stage; ``none`` keeps
-    OBR's row-wise compensation.
-    ``drift_act`` is where DAC applies the runtime activation quantizer
-    ``Q_a`` (no-op at 16-bit activations and under qir): ``none`` (default)
-    is the original DAC on the full-precision activations ``z``; ``layer``
-    forms ``H = E[x_hat x_hat^T]`` and ``D = E[(x_hat - x) x_hat^T]`` on
-    ``x_hat = Q_a(z)``; ``prefix`` also replays the compressed prefix with
-    ``Q_a`` on every linear input.  Both overfit short calibration sets
-    (docs/dac-revision.md) and are kept as ablations.
-    ``drift_ridge`` ``cv`` replaces DAC's drift regression ``D H^-1`` by
-    ``D (H + c g I)^-1`` with ``c`` chosen per layer by cross-validation over
-    calibration sequences (``c = inf`` is OBR); ``none`` keeps DAC's.
+    ``method`` ``none`` keeps the pruned, rounded weights; ``obr`` is OBR's
+    symmetric objective ``E||W_hat X_hat - W X_hat||^2`` on the sequentially
+    propagated input ``X_hat``; ``drift`` is QDrift's mixture
+
+        alpha E||W_hat X_hat - W X||^2 + beta E||W_hat X_hat - W X_hat||^2
+        + gamma E||W_hat X - W X||^2,
+
+    ``X`` the full-precision input, ``alpha = mix_asym``,
+    ``gamma = mix_clean`` and ``beta = 1 - alpha - gamma``
+    (docs/mixture-dac.md).  ``alpha = 1, gamma = 0`` is the original DAC and
+    ``alpha = gamma = 0`` is OBR.  ``alpha`` (no relation to ``mix_asym``) is
+    OBR's early/late column split.
     """
 
     method: str = "obr"
     alpha: float = 0.5
     damping: float = 0.01
-    mechanism: str = "obr"
-    outlier_factor: float = 8.0
-    drift_shrink: str = "none"
-    curvature: str = "none"
-    curvature_damping: float = 1.0
-    curvature_iters: int = 256
-    drift_act: str = "none"
-    drift_ridge: str = "none"
+    mix_asym: float = 1.0
+    mix_clean: float = 0.0
 
     def validate(self) -> None:
         if self.method not in ("none", "obr", "drift"):
@@ -366,36 +339,24 @@ class CompensationSpec:
             raise ValueError("compensation alpha must be in [0, 1]")
         if self.damping < 0.0:
             raise ValueError("damping must be non-negative")
-        if self.mechanism not in MECHANISMS:
-            raise ValueError(f"unknown mechanism {self.mechanism}")
-        if self.outlier_factor < 0.0:
-            raise ValueError("outlier factor must be non-negative")
-        if self.drift_shrink not in DRIFT_SHRINK:
-            raise ValueError(f"unknown drift shrinkage {self.drift_shrink}")
-        if self.drift_shrink != "none" and self.method != "drift":
-            raise ValueError("drift shrinkage needs --comp drift")
-        if self.curvature not in CURVATURE:
-            raise ValueError(f"unknown output curvature {self.curvature}")
-        if self.curvature != "none" and self.method == "none":
-            raise ValueError("output curvature needs a compensation method")
-        if self.curvature_damping <= 0.0:
-            raise ValueError("curvature damping must be positive")
-        if self.curvature_iters < 0:
-            raise ValueError("curvature iterations must be non-negative")
-        if self.drift_act not in DRIFT_ACT:
-            raise ValueError(f"unknown drift activation mode {self.drift_act}")
-        if self.drift_ridge not in DRIFT_RIDGE:
-            raise ValueError(f"unknown drift ridge {self.drift_ridge}")
-        if self.drift_ridge != "none" and self.method != "drift":
-            raise ValueError("the drift ridge needs --comp drift")
-        if self.drift_ridge != "none" and self.drift_shrink != "none":
-            raise ValueError("use either the drift ridge or drift shrinkage, not both")
+        if self.mix_asym < 0.0 or self.mix_clean < 0.0 or self.mix_asym + self.mix_clean > 1.0:
+            raise ValueError("mixture weights need mix_asym, mix_clean >= 0 and mix_asym + mix_clean <= 1")
+        if self.method != "drift" and not self.is_default_mix():
+            raise ValueError("mixture weights need --comp drift")
+
+    def is_default_mix(self) -> bool:
+        """The original DAC weights (``alpha = 1, gamma = 0``)."""
+        return self.mix_asym == 1.0 and self.mix_clean == 0.0
+
+    def mix_tag(self) -> str:
+        """``-a{alpha}c{gamma}`` for non-default mixture weights, else empty."""
+        if self.method != "drift" or self.is_default_mix():
+            return ""
+        return f"-a{self.mix_asym:g}c{self.mix_clean:g}"
 
     def mechanism_tag(self) -> str:
-        """``obr``, ``qir``, or ``qir-k{kappa}`` for a non-default threshold."""
-        if self.mechanism == "qir" and self.outlier_factor != 8.0:
-            return f"qir-k{self.outlier_factor:g}"
-        return self.mechanism
+        """The solver every objective runs on (kept in run and checkpoint names)."""
+        return "obr"
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -403,39 +364,21 @@ class CompensationSpec:
             "alpha": self.alpha,
             "damping": self.damping,
         }
-        # The default mechanism stays implicit so recipe hashes, and with
-        # them the ids of existing checkpoints, do not change.
-        if self.mechanism != "obr":
-            data["mechanism"] = self.mechanism
-        if self.mechanism == "qir" and self.outlier_factor != 8.0:
-            data["outlier_factor"] = self.outlier_factor
-        if self.drift_shrink != "none":
-            data["drift_shrink"] = self.drift_shrink
-        if self.curvature != "none":
-            data["curvature"] = self.curvature
-            data["curvature_damping"] = self.curvature_damping
-            data["curvature_iters"] = self.curvature_iters
-        if self.drift_act != "none":
-            data["drift_act"] = self.drift_act
-        if self.drift_ridge != "none":
-            data["drift_ridge"] = self.drift_ridge
+        # Default weights stay implicit so the ids of existing DAC
+        # checkpoints do not change.
+        if not self.is_default_mix():
+            data["mix_asym"] = self.mix_asym
+            data["mix_clean"] = self.mix_clean
         return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CompensationSpec:
-        method = str(data.get("method", "obr"))
         return cls(
-            method=method,
+            method=str(data.get("method", "obr")),
             alpha=float(data.get("alpha", 0.5)),
             damping=float(data.get("damping", 0.01)),
-            mechanism=str(data.get("mechanism", "obr")),
-            outlier_factor=float(data.get("outlier_factor", 8.0)),
-            drift_shrink=str(data.get("drift_shrink", "none")),
-            curvature=str(data.get("curvature", "none")),
-            curvature_damping=float(data.get("curvature_damping", 1.0)),
-            curvature_iters=int(data.get("curvature_iters", 256)),
-            drift_act=str(data.get("drift_act", "none")),
-            drift_ridge=str(data.get("drift_ridge", "none")),
+            mix_asym=float(data.get("mix_asym", 1.0)),
+            mix_clean=float(data.get("mix_clean", 0.0)),
         )
 
 
@@ -465,12 +408,6 @@ class CompressionRecipe:
         self.prune.validate()
         self.rotation.validate()
         self.compensation.validate()
-        if (
-            self.compensation.mechanism == "qir"
-            and self.compensation.method != "none"
-            and self.activation.bits >= 16
-        ):
-            raise ValueError("the qir mechanism needs quantized activations")
         if self.nsamples <= 0:
             raise ValueError("nsamples must be positive")
         if self.seqlen <= 0:
@@ -608,9 +545,7 @@ class CompressionRecipe:
         if max(self.kv_cache.k_bits, self.kv_cache.v_bits) < 16:
             parts.append(f"k{self.kv_cache.granularity.tag()}")
         infix = "_".join(parts)
-        tag = f"{prefix}__{infix}__{self.compensation.method}"
-        if self.compensation.mechanism != "obr":
-            tag += f"-{self.compensation.mechanism_tag()}"
+        tag = f"{prefix}__{infix}__{self.compensation.method}{self.compensation.mix_tag()}"
         if self.prune.structure in ("2:4", "4:8"):
             tag += f"__pw{self.pairwise_fraction:g}"
         if self._has_hidden_nondefault():
