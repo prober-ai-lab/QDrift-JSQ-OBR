@@ -23,6 +23,8 @@ from dataclasses import dataclass
 
 import torch
 
+from qdrift.models.backbone import offload_device
+
 __all__ = [
     "CalibrationStart",
     "FullPrecisionStream",
@@ -133,6 +135,46 @@ def _detach_kwargs(kwargs: dict[str, object]) -> dict[str, object]:
     return {key: _detach_value(value) for key, value in kwargs.items()}
 
 
+def _move_value(value: object, device: str) -> object:
+    if torch.is_tensor(value):
+        return value.to(device)
+    if isinstance(value, (tuple, list)):
+        return type(value)(_move_value(item, device) for item in value)
+    return value
+
+
+def _move_kwargs(kwargs: dict[str, object], device: str) -> dict[str, object]:
+    return {key: _move_value(value, device) for key, value in kwargs.items()}
+
+
+class _StopForward(Exception):
+    """Abort a forward pass once the first block's input has been captured."""
+
+
+def _install_block_shuttle(model: torch.nn.Module, device: str) -> list:
+    """Move each decoder block to ``device`` for its own forward, then back.
+
+    The hidden state produced by a block stays on ``device`` (the next block's
+    pre-hook, and the final norm, expect it there); only the block's parameters
+    migrate, so the host never holds more than the parked blocks and the device
+    never holds more than one block plus the running activations.
+    """
+
+    def pre(module, args, kwargs):
+        module.to(device)
+        return _move_value(args, device), _move_kwargs(kwargs, device)
+
+    def post(module, args, kwargs, output):
+        module.to("cpu")
+        return None
+
+    handles = []
+    for block in model.model.layers:
+        handles.append(block.register_forward_pre_hook(pre, with_kwargs=True))
+        handles.append(block.register_forward_hook(post, with_kwargs=True))
+    return handles
+
+
 @dataclass
 class CalibrationStart:
     """First-block activations and optional full-precision captures."""
@@ -197,9 +239,36 @@ def capture_calibration_start(
 
         return hook
 
+    dev = offload_device(model)
+    if dev is not None:
+        device = dev
+
+    if dev is not None and not capture_names:
+        # Only the first block's input is needed; the embedding and rotary are
+        # on the device, so capture it and abort before any parked block runs.
+        def stop_hook(module, args, kwargs):
+            layer_hook(module, args, kwargs)
+            raise _StopForward
+
+        handle = blocks[0].register_forward_pre_hook(stop_hook, with_kwargs=True)
+        try:
+            for ids in chunks:
+                inputs = ids.to(device)
+                if inputs.ndim == 1:
+                    inputs = inputs.unsqueeze(0)
+                try:
+                    model(inputs)
+                except _StopForward:
+                    pass
+        finally:
+            handle.remove()
+        return CalibrationStart(hidden=hidden, kwargs=kwargs_list, inputs={})
+
     handles.append(blocks[0].register_forward_pre_hook(layer_hook, with_kwargs=True))
     for name in capture_names:
         handles.append(modules[name].register_forward_pre_hook(make_hook(name)))
+    if dev is not None:
+        handles.extend(_install_block_shuttle(model, dev))
     try:
         for ids in chunks:
             inputs = ids.to(device)
@@ -223,7 +292,11 @@ class SequentialCalibration:
     def __init__(self, model: torch.nn.Module, start: CalibrationStart) -> None:
         self.blocks = list(model.model.layers)
         self.modules = dict(model.named_modules())
-        self.hidden = list(start.hidden)
+        self.device = offload_device(model)
+        if self.device is not None:
+            self.hidden = [hidden.to("cpu") for hidden in start.hidden]
+        else:
+            self.hidden = list(start.hidden)
         self.kwargs = list(start.kwargs)
         self.index = 0
 
@@ -232,10 +305,18 @@ class SequentialCalibration:
         if self.index + 1 >= len(self.blocks):
             raise ValueError("cannot advance beyond the final decoder layer")
         layer = self.blocks[self.index]
-        outputs = []
-        for hidden, kwargs in zip(self.hidden, self.kwargs, strict=True):
-            value = layer(hidden, **kwargs)
-            outputs.append(value[0] if isinstance(value, (tuple, list)) else value)
+        dev = self.device
+        if dev is not None:
+            layer.to(dev)
+        try:
+            outputs = []
+            for hidden, kwargs in zip(self.hidden, self.kwargs, strict=True):
+                value = layer(hidden.to(dev) if dev is not None else hidden, **kwargs)
+                value = value[0] if isinstance(value, (tuple, list)) else value
+                outputs.append(value.to("cpu") if dev is not None else value)
+        finally:
+            if dev is not None:
+                layer.to("cpu")
         self.hidden = outputs
         self.index += 1
 
@@ -250,35 +331,42 @@ class SequentialCalibration:
         if target < self.index:
             raise ValueError(f"capture point {capture!r} is behind the cursor")
         layer = self.blocks[self.index]
-        # q/k/v share the post-input-norm tensor.  Capture it directly when the
-        # block exposes input_layernorm, avoiding one full layer forward.
-        if capture.endswith(".self_attn.q_proj"):
-            norm = getattr(layer, "input_layernorm", None)
-            if norm is not None:
-                values = [
-                    norm(hidden)
-                    .detach()
-                    .reshape(-1, hidden.shape[-1])
-                    .to(device="cpu", dtype=torch.float32)
-                    for hidden in self.hidden
-                ]
-                return torch.cat(values, dim=0) if values else torch.empty(0)
-        module = self.modules[capture]
-        values: list[torch.Tensor] = []
-
-        def hook(module, inputs):
-            if not inputs:
-                return
-            value = inputs[0].detach().reshape(-1, inputs[0].shape[-1])
-            values.append(value.to(device="cpu", dtype=torch.float32))
-
-        handle = module.register_forward_pre_hook(hook)
+        dev = self.device
+        if dev is not None:
+            layer.to(dev)
         try:
-            for hidden, kwargs in zip(self.hidden, self.kwargs, strict=True):
-                layer(hidden, **kwargs)
+            # q/k/v share the post-input-norm tensor.  Capture it directly when
+            # the block exposes input_layernorm, avoiding one full layer forward.
+            if capture.endswith(".self_attn.q_proj"):
+                norm = getattr(layer, "input_layernorm", None)
+                if norm is not None:
+                    values = [
+                        norm(hidden.to(dev) if dev is not None else hidden)
+                        .detach()
+                        .reshape(-1, hidden.shape[-1])
+                        .to(device="cpu", dtype=torch.float32)
+                        for hidden in self.hidden
+                    ]
+                    return torch.cat(values, dim=0) if values else torch.empty(0)
+            module = self.modules[capture]
+            values: list[torch.Tensor] = []
+
+            def hook(module, inputs):
+                if not inputs:
+                    return
+                value = inputs[0].detach().reshape(-1, inputs[0].shape[-1])
+                values.append(value.to(device="cpu", dtype=torch.float32))
+
+            handle = module.register_forward_pre_hook(hook)
+            try:
+                for hidden, kwargs in zip(self.hidden, self.kwargs, strict=True):
+                    layer(hidden.to(dev) if dev is not None else hidden, **kwargs)
+            finally:
+                handle.remove()
+            return torch.cat(values, dim=0) if values else torch.empty(0)
         finally:
-            handle.remove()
-        return torch.cat(values, dim=0) if values else torch.empty(0)
+            if dev is not None:
+                layer.to("cpu")
 
 
 class FullPrecisionStream:
@@ -302,6 +390,7 @@ class FullPrecisionStream:
     ) -> None:
         self.blocks = list(model.model.layers)
         self.modules = dict(model.named_modules())
+        self.device = offload_device(model)
         self.hidden = [hidden.to("cpu") for hidden in start.hidden]
         self.kwargs = list(start.kwargs)
         self.dtype = dtype
@@ -339,7 +428,11 @@ class FullPrecisionStream:
             for name in names
         ]
         layer = self.blocks[self.index]
-        device = next(layer.parameters()).device
+        if self.device is not None:
+            layer.to(self.device)
+            device = self.device
+        else:
+            device = next(layer.parameters()).device
         outputs = []
         try:
             for hidden, kwargs in zip(self.hidden, self.kwargs, strict=True):
@@ -349,6 +442,8 @@ class FullPrecisionStream:
         finally:
             for handle in handles:
                 handle.remove()
+            if self.device is not None:
+                layer.to("cpu")
         self.hidden = outputs
         self.index += 1
         self._current = {name: torch.cat(values, dim=0) for name, values in store.items()}
@@ -382,6 +477,10 @@ def capture_inputs(
 
     for name in capture_names:
         handles.append(modules[name].register_forward_pre_hook(make_hook(name)))
+    dev = offload_device(model)
+    if dev is not None:
+        device = dev
+        handles.extend(_install_block_shuttle(model, dev))
     try:
         for ids in chunks:
             inputs = ids.to(device)

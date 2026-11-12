@@ -708,6 +708,7 @@ def compress(
     devices: list[str] | None = None,
     mask_sink: str | Path | None = None,
     name: str | None = None,
+    offload: bool = False,
 ) -> Path:
     """Compress a model and write a checkpoint plus sidecar metadata.
 
@@ -733,6 +734,7 @@ def compress(
         recipe.model,
         manifest_path,
         device=main_device,
+        offload=offload,
     )
     tokenizer = load_tokenizer(recipe.model, manifest_path)
     if recipe.rotation.mode != "none":

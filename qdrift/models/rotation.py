@@ -8,6 +8,7 @@ from collections.abc import Iterable
 
 import torch
 
+from qdrift.models.backbone import offload_device
 from qdrift.quarot.hadamard import (
     apply_exact_had_to_linear,
     matmul_hadU,
@@ -74,8 +75,14 @@ def fuse_layer_norms(model: torch.nn.Module) -> None:
         "device": embeddings.weight.device,
         "dtype": embeddings.weight.dtype,
     }
+    # Under weight offload the blocks sit on the host; fuse each one on the
+    # compute device so the fp64 fold matches the non-offloaded path, then park
+    # it again.  embeddings.weight is already on that device.
+    dev = offload_device(model)
 
     for layer in model.model.layers:
+        if dev is not None:
+            layer.to(dev)
         fuse_ln_linear(
             layer.input_layernorm,
             [
@@ -90,6 +97,8 @@ def fuse_layer_norms(model: torch.nn.Module) -> None:
         )
         layer.input_layernorm = RMSNorm(hidden_size, eps=eps).to(**norm_kwargs)
         layer.post_attention_layernorm = RMSNorm(hidden_size, eps=eps).to(**norm_kwargs)
+        if dev is not None:
+            layer.to("cpu")
 
     fuse_ln_linear(model.model.norm, [model.lm_head])
     model.model.norm = RMSNorm(hidden_size, eps=eps).to(**norm_kwargs)
@@ -206,11 +215,20 @@ def rotate_model(
     head_dim = hidden_size // num_heads
     q = get_orthogonal_matrix(hidden_size, mode, device, seed)
 
+    # Under weight offload the blocks sit on the host; rotate each one on the
+    # compute device (q lives there) so the fp64 matmuls match the non-offloaded
+    # path, then park it again.  Embedding and head are already on the device.
+    off = offload_device(model)
+
     rotate_embeddings(model, q)
     rotate_lm_head(model, q)
     for layer in model.model.layers:
+        if off is not None:
+            layer.to(device)
         rotate_attention(layer, q, head_dim)
         rotate_mlp(layer, q)
+        if off is not None:
+            layer.to("cpu")
 
 
 def install_online_hadamards(model: torch.nn.Module) -> None:

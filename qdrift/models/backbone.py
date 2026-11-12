@@ -13,6 +13,8 @@ from transformers import AutoModelForCausalLM
 __all__ = [
     "load_backbone",
     "load_manifest",
+    "offload_backbone",
+    "offload_device",
     "quantizable_linear_layers",
     "resolve_model_source",
 ]
@@ -55,18 +57,54 @@ def load_backbone(
     manifest_path: str | Path = "modelzoo/manifest.yaml",
     device: str = "cuda",
     dtype: torch.dtype = torch.float16,
+    offload: bool = False,
 ) -> torch.nn.Module:
-    """Load a model backbone by manifest identifier or by a direct path."""
+    """Load a model backbone by manifest identifier or by a direct path.
+
+    With ``offload=True`` the decoder blocks stay on the host and only the
+    embedding, rotary, final norm and lm-head move to ``device``; the
+    calibration helpers shuttle one block to ``device`` at a time.  This lets a
+    model whose weights exceed one GPU (for example LLaMA-2-13B on a 24 GB card)
+    be compressed on a single device.  Every matmul still runs on ``device`` in
+    the same order and dtype, so the result is bit-identical to ``offload=False``.
+    """
     source = resolve_model_source(model_name, manifest_path)
     model = AutoModelForCausalLM.from_pretrained(
         source,
         dtype=dtype,
         low_cpu_mem_usage=True,
     )
-    model.to(device)
+    if offload:
+        offload_backbone(model, device)
+    else:
+        model.to(device)
     model.eval()
     model.config.use_cache = False
     return model
+
+
+def offload_backbone(model: torch.nn.Module, device: str) -> None:
+    """Park the decoder blocks on the host, everything else on ``device``.
+
+    Records ``device`` on the model so the calibration helpers know to shuttle
+    blocks on demand (:func:`offload_device`).
+    """
+    inner = model.model
+    inner.layers.to("cpu")
+    inner.embed_tokens.to(device)
+    rotary = getattr(inner, "rotary_emb", None)
+    if rotary is not None:
+        rotary.to(device)
+    inner.norm.to(device)
+    head = getattr(model, "lm_head", None)
+    if head is not None:
+        head.to(device)
+    model._qdrift_offload_device = device
+
+
+def offload_device(model: torch.nn.Module) -> str | None:
+    """The compute device if ``model`` is offloaded, else ``None``."""
+    return getattr(model, "_qdrift_offload_device", None)
 
 
 def quantizable_linear_layers(model: torch.nn.Module) -> dict[str, torch.nn.Linear]:

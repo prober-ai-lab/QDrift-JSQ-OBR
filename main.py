@@ -96,6 +96,7 @@ def _add_compress_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--devices", default="", help="comma-separated CUDA devices, e.g. 0,1,2,3")
     parser.add_argument("--parallel", choices=("auto", "workers", "intra"), default="auto", help="auto/workers: independent variant workers; intra: one process using all devices for row/layer parallelism")
     parser.add_argument("--single", action="store_true", help="only write the joint checkpoint (skip dense/sparse/quant)")
+    parser.add_argument("--offload", action="store_true", help="keep the decoder blocks on the host and compress one block at a time on the GPU; for models that do not fit one card (e.g. LLaMA-2-13B on 24 GB). Bit-identical to the on-device path")
     # fmt: on
 
 
@@ -224,6 +225,7 @@ def _run(args: argparse.Namespace, recipe: CompressionRecipe) -> int:
         output_dir=str(CHECKPOINTS_V2),
         devices=devices,
         name=name,
+        offload=args.offload,
     )
     layers = json.loads(sidecar.read_text(encoding="utf-8")).get("layers")
     record = {
