@@ -157,7 +157,7 @@ def _unconstrained_target(
     drift_weight: torch.Tensor | None,
 ) -> torch.Tensor:
     """Each row's unconstrained optimum ``w*``: ``W`` for OBR, ``W - W D H^-1``
-    for DAC (``drift_weight = W D``)."""
+    for QDrift (``drift_weight = alpha W D``)."""
     if drift_weight is None:
         return weight
     factor = torch.linalg.cholesky(system)

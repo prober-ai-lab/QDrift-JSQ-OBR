@@ -3,7 +3,7 @@
 """
 The interface between calibration and a compensation mechanism.
 
-Calibration (plain sequential or QDrift's drift-aware, dual-path one) hands
+Calibration (plain sequential or QDrift's dual-path one) hands
 each layer a :class:`LayerStats`.  A :class:`Mechanism` turns the pre-mask
 weight, the mask, and these statistics into the retained values that the
 final weight quantizer (RTN or the late-half GPTQ) rounds, together with the

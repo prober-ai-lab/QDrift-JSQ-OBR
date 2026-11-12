@@ -75,7 +75,7 @@ def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--range", choices=("full", "clip"), default="clip")
     parser.add_argument("--quant", choices=("rtn", "gptq"), default="gptq")
     parser.add_argument("--comp", choices=("none", "obr", "drift"), default="obr", help="calibration objective: obr=OBR (symmetric on the drifted input), drift=QDrift's mixture (--mix-asym, --mix-clean)")
-    parser.add_argument("--mix-asym", type=float, default=1.0, help="drift: weight alpha of the asymmetric target E||W_hat X_hat - W X||^2 (1 with --mix-clean 0 = original DAC)")
+    parser.add_argument("--mix-asym", type=float, default=1.0, help="drift: weight alpha of the asymmetric target E||W_hat X_hat - W X||^2 (1 with --mix-clean 0 = the pure asymmetric target)")
     parser.add_argument("--mix-clean", type=float, default=0.0, help="drift: weight gamma of the clean-input target E||W_hat X - W X||^2; the symmetric target gets 1 - alpha - gamma (0, 0 = OBR)")
     parser.add_argument("--rotation", choices=("hadamard", "none"), default="hadamard", help="hadamard=fast global Hadamard; none=identity")
     parser.add_argument("--nsamples", type=int, default=128)

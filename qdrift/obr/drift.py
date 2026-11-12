@@ -15,7 +15,7 @@ quadratic ``(w_hat - w*) H (w_hat - w*)^T + const`` with
 
 so OBR's solver applies unchanged with the system ``H`` (damped) and the drift
 term ``alpha W D``.  ``alpha = gamma = 0`` is OBR; ``alpha = 1, gamma = 0`` is
-the original DAC.  See docs/mixture-dac.md.
+the pure asymmetric target.  See docs/qdrift.md.
 """
 
 from __future__ import annotations

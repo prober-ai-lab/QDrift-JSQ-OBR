@@ -1,10 +1,10 @@
 # Copyright (c) 2026 QDrift Authors. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Minitest: input drift accumulates with depth; DAC cancels part of it.
+"""Minitest: input drift accumulates with depth; QDrift cancels part of it.
 
 The whole model is compressed sequentially in memory with the pipeline's own
 per-layer routine (``_quantize_layer``), once per compensation mode
-(none / OBR / DAC), with the same mask criterion for all of them.  Before
+(none / OBR / QDrift), with the same mask criterion for all of them.  Before
 each linear layer is compressed we have its full-precision input ``X`` (dense
 model) and its actual input ``X_hat`` (compressed prefix); after compression
 we record, over all calibration tokens,

@@ -3,7 +3,7 @@
 """N:M and pairwise masks chosen by their exact compensated cost.
 
 Each row of the compensation objective is ``(v - w*) H (v - w*)^T``, ``w*``
-the row's unconstrained optimum (``w`` for OBR, ``w - w D H^-1`` for DAC).
+the row's unconstrained optimum (``w`` for OBR, ``w - alpha w D H^-1`` for QDrift).
 Pruning the set ``P`` with the rest of the row compensated costs
 ``w*_P [G_PP]^-1 w*_P^T``, ``G = H^-1`` (multi-weight OBS).  The blocks of
 ``g`` columns are decided left to right with the columns before the block

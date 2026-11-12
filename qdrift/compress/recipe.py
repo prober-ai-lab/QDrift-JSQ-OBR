@@ -321,7 +321,7 @@ class CompensationSpec:
 
     ``X`` the full-precision input, ``alpha = mix_asym``,
     ``gamma = mix_clean`` and ``beta = 1 - alpha - gamma``
-    (docs/mixture-dac.md).  ``alpha = 1, gamma = 0`` is the original DAC and
+    (docs/qdrift.md).  ``alpha = 1, gamma = 0`` is the pure asymmetric target and
     ``alpha = gamma = 0`` is OBR.  ``alpha`` (no relation to ``mix_asym``) is
     OBR's early/late column split.
     """
@@ -345,7 +345,7 @@ class CompensationSpec:
             raise ValueError("mixture weights need --comp drift")
 
     def is_default_mix(self) -> bool:
-        """The original DAC weights (``alpha = 1, gamma = 0``)."""
+        """The default weights (``alpha = 1, gamma = 0``)."""
         return self.mix_asym == 1.0 and self.mix_clean == 0.0
 
     def mix_tag(self) -> str:
@@ -364,7 +364,7 @@ class CompensationSpec:
             "alpha": self.alpha,
             "damping": self.damping,
         }
-        # Default weights stay implicit so the ids of existing DAC
+        # Default weights stay implicit so the ids of existing QDrift
         # checkpoints do not change.
         if not self.is_default_mix():
             data["mix_asym"] = self.mix_asym

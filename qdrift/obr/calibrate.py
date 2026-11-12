@@ -155,7 +155,7 @@ def capture_calibration_start(
     The first-block hidden states and forward kwargs are kept so the caller can
     replay each decoder layer with already-compressed weights, matching OBR's
     sequential calibration.  ``capture_names`` may be used to freeze the
-    uncompressed input distribution needed by DriftOBR.
+    uncompressed input distribution needed by QDrift.
 
     Large calibrations (for example 128 x 2048) are captured into preallocated
     buffers instead of a list plus ``torch.cat``, which would temporarily double
@@ -282,7 +282,7 @@ class SequentialCalibration:
 
 
 class FullPrecisionStream:
-    """DAC's target inputs ``x``, one decoder block at a time.
+    """QDrift's full-precision inputs ``x``, one decoder block at a time.
 
     The first :meth:`inputs` call for a block runs that block once on the
     full-precision hidden states, keeps its inputs at every capture point and

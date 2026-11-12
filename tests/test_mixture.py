@@ -114,6 +114,6 @@ def test_obr_is_the_zero_mixture(monkeypatch) -> None:
         _layer_recipe(CompensationSpec(method="drift", mix_asym=0.0, mix_clean=0.0)),
         qparams, "l", weight, x, z, "cpu", True,
     )
-    dac = P._process_full_layer(_layer_recipe(CompensationSpec(method="drift")), qparams, "l", weight, x, z, "cpu", True)
+    asym = P._process_full_layer(_layer_recipe(CompensationSpec(method="drift")), qparams, "l", weight, x, z, "cpu", True)
     assert torch.allclose(mix.new_weight.float(), obr.new_weight.float(), atol=1e-6)
-    assert not torch.allclose(dac.new_weight.float(), obr.new_weight.float(), atol=1e-6)
+    assert not torch.allclose(asym.new_weight.float(), obr.new_weight.float(), atol=1e-6)

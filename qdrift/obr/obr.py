@@ -3,7 +3,7 @@
 """OBR pruning and quantization compensation.
 
 The core compensation accepts an optional ``drift_weight`` tensor supplied by
-:mod:`qdrift.obr.drift`.  Plain OBR leaves it unset; DriftOBR computes it from
+:mod:`qdrift.obr.drift`.  Plain OBR leaves it unset; QDrift computes it from
 the dual-path Hessian difference.
 """
 

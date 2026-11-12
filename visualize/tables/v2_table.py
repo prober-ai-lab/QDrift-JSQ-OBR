@@ -3,7 +3,7 @@
 """The v2 results as a markdown table.
 
 Rows are (setting, pattern); columns are the calibration objectives found:
-``seq`` (OBR) first, then ``qdrift`` (original DAC) and QDrift's mixtures
+``seq`` (OBR) first, then QDrift: ``qdrift`` (alpha 1, gamma 0) and
 ``qdrift-a{alpha}c{gamma}``.  Cells are WikiText-2 test perplexity with the
 validation perplexity in parentheses when present; missing runs print ``-``.
 Runs whose late half is not quantized by GPTQ, whose criterion is not
