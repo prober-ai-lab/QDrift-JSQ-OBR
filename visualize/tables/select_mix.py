@@ -83,9 +83,6 @@ def main(argv: list[str] | None = None) -> int:
             # Legacy diagnostic tags (per-layer, per-prefix, ridge variants)
             # are not part of the selectable grid.
             continue
-        if record.get("mechanism", "obr") != "obr":
-            # Retired mechanisms (QIR and friends) must not enter the grid.
-            continue
         key = (record.get("model", "llama2-7b"), _setting(record), record["pattern"])
         runs.setdefault(key, {})[tag] = ppl
 
