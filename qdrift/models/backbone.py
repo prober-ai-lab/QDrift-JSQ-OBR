@@ -58,6 +58,7 @@ def load_backbone(
     device: str = "cuda",
     dtype: torch.dtype = torch.float16,
     offload: bool = False,
+    device_map: str | dict | None = None,
 ) -> torch.nn.Module:
     """Load a model backbone by manifest identifier or by a direct path.
 
@@ -67,17 +68,26 @@ def load_backbone(
     model whose weights exceed one GPU (for example LLaMA-2-13B on a 24 GB card)
     be compressed on a single device.  Every matmul still runs on ``device`` in
     the same order and dtype, so the result is bit-identical to ``offload=False``.
+
+    ``device_map`` (e.g. ``"auto"``) is passed straight to
+    :meth:`~transformers.AutoModelForCausalLM.from_pretrained` and lets
+    accelerate shard the fp16 backbone across every visible GPU.  When it is
+    set, ``offload`` and ``device`` are ignored because accelerate owns the
+    placement.
     """
     source = resolve_model_source(model_name, manifest_path)
-    model = AutoModelForCausalLM.from_pretrained(
-        source,
-        dtype=dtype,
-        low_cpu_mem_usage=True,
-    )
-    if offload:
-        offload_backbone(model, device)
-    else:
-        model.to(device)
+    kwargs: dict[str, object] = {
+        "dtype": dtype,
+        "low_cpu_mem_usage": True,
+    }
+    if device_map is not None:
+        kwargs["device_map"] = device_map
+    model = AutoModelForCausalLM.from_pretrained(source, **kwargs)
+    if device_map is None:
+        if offload:
+            offload_backbone(model, device)
+        else:
+            model.to(device)
     model.eval()
     model.config.use_cache = False
     return model

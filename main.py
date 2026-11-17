@@ -196,6 +196,7 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--zeroshot", action=argparse.BooleanOptionalAction, default=False, help="evaluate the lm-eval zero-shot tasks")
     parser.add_argument("--lm-eval-tasks", default=",".join(ZEROSHOT_TASKS))
     parser.add_argument("--drop-checkpoint", action="store_true", help="delete the checkpoint once it is evaluated")
+    parser.add_argument("--eval-shard", action="store_true", help="shard the eval model across all visible GPUs (device_map=auto) for models too big for one card; off by default so 7B/8B stays byte-identical")
     # fmt: on
 
 
@@ -240,6 +241,7 @@ def _run(args: argparse.Namespace, recipe: CompressionRecipe) -> int:
             manifest_path="modelzoo/manifest.yaml",
             device=devices[0],
             allow_sparse=False,
+            shard=args.eval_shard,
         )
     if args.ppl:
         record["ppl"] = {}

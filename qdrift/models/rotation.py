@@ -58,6 +58,11 @@ def fuse_ln_linear(
             linear.bias.data = bias.to(dtype)
 
 
+def _is_sharded(model: torch.nn.Module) -> bool:
+    """True if accelerate placed ``model`` across devices (``device_map``)."""
+    return getattr(model, "hf_device_map", None) is not None
+
+
 def fuse_layer_norms(model: torch.nn.Module) -> None:
     """Fuse RMSNorm scales and replace norms with weightless RMSNorm."""
     hidden_size = model.config.hidden_size
@@ -79,10 +84,20 @@ def fuse_layer_norms(model: torch.nn.Module) -> None:
     # compute device so the fp64 fold matches the non-offloaded path, then park
     # it again.  embeddings.weight is already on that device.
     dev = offload_device(model)
+    sharded = _is_sharded(model)
 
     for layer in model.model.layers:
         if dev is not None:
             layer.to(dev)
+        # Under device_map sharding each block already lives on its target GPU;
+        # the replacement norms must follow that block, not the embeddings.
+        layer_device = (
+            next(layer.parameters()).device if sharded else norm_kwargs["device"]
+        )
+        layer_norm_kwargs: dict[str, torch.device | torch.dtype] = {
+            "device": layer_device,
+            "dtype": norm_kwargs["dtype"],
+        }
         fuse_ln_linear(
             layer.input_layernorm,
             [
@@ -95,13 +110,17 @@ def fuse_layer_norms(model: torch.nn.Module) -> None:
             layer.post_attention_layernorm,
             [layer.mlp.gate_proj, layer.mlp.up_proj],
         )
-        layer.input_layernorm = RMSNorm(hidden_size, eps=eps).to(**norm_kwargs)
-        layer.post_attention_layernorm = RMSNorm(hidden_size, eps=eps).to(**norm_kwargs)
+        layer.input_layernorm = RMSNorm(hidden_size, eps=eps).to(**layer_norm_kwargs)
+        layer.post_attention_layernorm = RMSNorm(hidden_size, eps=eps).to(**layer_norm_kwargs)
         if dev is not None:
             layer.to("cpu")
 
     fuse_ln_linear(model.model.norm, [model.lm_head])
-    model.model.norm = RMSNorm(hidden_size, eps=eps).to(**norm_kwargs)
+    # The final norm feeds the lm_head, so it belongs on the head's device.
+    head_device = model.lm_head.weight.device
+    model.model.norm = RMSNorm(hidden_size, eps=eps).to(
+        device=head_device, dtype=embeddings.weight.dtype
+    )
 
 
 def get_orthogonal_matrix(
@@ -219,16 +238,27 @@ def rotate_model(
     # compute device (q lives there) so the fp64 matmuls match the non-offloaded
     # path, then park it again.  Embedding and head are already on the device.
     off = offload_device(model)
+    sharded = _is_sharded(model)
 
     rotate_embeddings(model, q)
     rotate_lm_head(model, q)
     for layer in model.model.layers:
+        # Rotation must run the fp64 matmuls on the same device as the
+        # reference single-GPU path for bit-identity.  Under offload we shuttle
+        # the block onto ``device`` and back to the host; under device_map
+        # sharding we shuttle it onto ``device`` and back to its own GPU.
+        layer_q = q
+        park: torch.device | str | None = None
         if off is not None:
             layer.to(device)
-        rotate_attention(layer, q, head_dim)
-        rotate_mlp(layer, q)
-        if off is not None:
-            layer.to("cpu")
+            park = "cpu"
+        elif sharded:
+            park = next(layer.parameters()).device
+            layer.to(device)
+        rotate_attention(layer, layer_q, head_dim)
+        rotate_mlp(layer, layer_q)
+        if park is not None:
+            layer.to(park)
 
 
 def install_online_hadamards(model: torch.nn.Module) -> None:

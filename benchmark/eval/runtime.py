@@ -136,14 +136,15 @@ def make_layer_case(
     config: dict[str, object],
     tensors: dict[str, torch.Tensor],
     name: str,
+    device: str = "cuda",
 ) -> LayerCase:
-    """Prepare one layer from a checkpoint on the current CUDA device."""
+    """Prepare one layer from a checkpoint on ``device``."""
     shape = tensors[f"{name}.weight_shape"]
     out_features = int(shape[0])
     in_features = int(shape[1])
     mask = tensors.get(f"{name}.weight_mask")
     if mask is not None:
-        mask = mask.cuda()
+        mask = mask.to(device)
     recipe = CompressionRecipe.from_config(config)
     value_layout = str(config.get("layout", {}).get("value_layout", "full"))
     scale_group_size = None
@@ -154,20 +155,20 @@ def make_layer_case(
             raise ValueError(f"{name} has compacted codes but no mask")
         mask_bool = _unpack_mask(mask, in_features)
         codes_compact = unpack_codes(
-            tensors[f"{name}.weight_kept_packed"].cuda(),
+            tensors[f"{name}.weight_kept_packed"].to(device),
             recipe.weight.bits,
             kept,
         ).to(torch.int8)
         codes_full = torch.zeros(
             out_features,
             in_features,
-            device="cuda",
+            device=device,
             dtype=torch.int8,
         )
         codes_full[mask_bool] = codes_compact.reshape(-1)
         packed, _ = pack_codes(codes_full, recipe.weight.bits)
         scale_compact = tensors[f"{name}.weight_kept_scale"].to(
-            device="cuda", dtype=torch.float32
+            device=device, dtype=torch.float32
         )
         kept_scale = expand_scale(
             scale_compact,
@@ -179,17 +180,17 @@ def make_layer_case(
         scale_full = torch.ones(
             out_features,
             in_features,
-            device="cuda",
+            device=device,
             dtype=torch.float16,
         )
         scale_full[mask_bool] = kept_scale.reshape(-1).to(torch.float16)
         scales = scale_full
         scale_group_size = 1
     else:
-        packed = tensors[f"{name}.weight_packed"].cuda()
+        packed = tensors[f"{name}.weight_packed"].to(device)
         scales = _prepare_scales(
             config,
-            tensors[f"{name}.weight_scale"].to(device="cuda", dtype=torch.float16),
+            tensors[f"{name}.weight_scale"].to(device=device, dtype=torch.float16),
             out_features,
         )
     return LayerCase(
@@ -209,24 +210,25 @@ def _fp16_regime_case(
     name: str,
     regime: str,
     allow_sparse: bool = True,
+    device: str = "cuda",
 ) -> LayerCase:
     """Rebuild the real fp16 weights for the dense or sparse checkpoint."""
     shape = tensors[f"{name}.weight_shape"]
     out_features = int(shape[0])
     in_features = int(shape[1])
     mask_packed = tensors.get(f"{name}.weight_mask")
-    packed_mask = mask_packed.cuda() if mask_packed is not None else None
+    packed_mask = mask_packed.to(device) if mask_packed is not None else None
     mask = _unpack_mask(packed_mask, in_features) if packed_mask is not None else None
 
     kept = int(tensors[f"{name}.weight_kept_shape"][1])
     kept_values = tensors[f"{name}.weight_kept_fp16"].to(
-        device="cuda",
+        device=device,
         dtype=torch.float16,
     )
     weight = torch.zeros(
         out_features,
         in_features,
-        device="cuda",
+        device=device,
         dtype=torch.float16,
     )
     if mask is None:
@@ -249,8 +251,8 @@ def _fp16_regime_case(
 
     return LayerCase(
         name=name,
-        packed=torch.empty(0, device="cuda", dtype=torch.uint8),
-        scales=torch.empty(0, device="cuda", dtype=torch.float16),
+        packed=torch.empty(0, device=device, dtype=torch.uint8),
+        scales=torch.empty(0, device=device, dtype=torch.float16),
         mask=packed_mask if regime == "sparse" else None,
         in_features=in_features,
         out_features=out_features,
@@ -276,10 +278,10 @@ def make_regime_case(
     dense integer kernel.
     """
     if regime in ("dense", "sparse"):
-        return _fp16_regime_case(config, tensors, name, regime, allow_sparse)
+        return _fp16_regime_case(config, tensors, name, regime, allow_sparse, device)
     if regime not in ("quant", "joint"):
         raise ValueError(f"unknown regime {regime}")
-    case = make_layer_case(config, tensors, name)
+    case = make_layer_case(config, tensors, name, device)
     recipe = CompressionRecipe.from_config(config)
     layer_meta = config.get("layers", {}).get(name, {})
     layer_structure = layer_meta.get("structure") if isinstance(layer_meta, dict) else None
@@ -368,8 +370,8 @@ def make_regime_case(
         # The dequantized weight owns the compute representation.  Compacted
         # layouts expand codes and scales to full width; keeping them next
         # to the fp16 weight triples the footprint (W3 7B runs out of memory).
-        case.packed = torch.empty(0, device="cuda", dtype=torch.uint8)
-        case.scales = torch.empty(0, device="cuda", dtype=torch.float16)
+        case.packed = torch.empty(0, device=device, dtype=torch.uint8)
+        case.scales = torch.empty(0, device=device, dtype=torch.float16)
         if regime == "quant":
             case.mask = None
         return case
@@ -422,8 +424,8 @@ def make_regime_case(
         # The INT8 plan owns the compute representation.  Drop the temporary
         # full-width packed codes/scales so 7B checkpoints do not accumulate
         # fp16-sized scale tensors for every layer.
-        case.packed = torch.empty(0, device="cuda", dtype=torch.uint8)
-        case.scales = torch.empty(0, device="cuda", dtype=torch.float16)
+        case.packed = torch.empty(0, device=device, dtype=torch.uint8)
+        case.scales = torch.empty(0, device=device, dtype=torch.float16)
         case.mask = None
     if regime == "quant":
         case.mask = None
@@ -545,8 +547,17 @@ def load_runtime_model(
     dtype: torch.dtype = torch.float16,
     compile_model: bool = False,
     allow_sparse: bool = True,
+    shard: bool = False,
 ) -> tuple[torch.nn.Module, object, CompressionRecipe]:
-    """Load a model whose Linear layers use the real regime kernels."""
+    """Load a model whose Linear layers use the real regime kernels.
+
+    With ``shard=True`` the fp16 backbone is placed with
+    ``device_map="auto"`` across every visible GPU (accelerate dispatch hooks
+    move activations between shards) and each compressed layer's case tensors
+    are built on that layer's assigned device.  This is the eval-side offload
+    for models that overflow one card (e.g. LLaMA-2-13B); it is off by default
+    so the 7B/8B path stays byte-identical.
+    """
     checkpoint = Path(checkpoint)
     config = json.loads(checkpoint.with_suffix(".json").read_text(encoding="utf-8"))
     recipe = CompressionRecipe.from_config(config)
@@ -564,6 +575,7 @@ def load_runtime_model(
         manifest_path,
         device=device,
         dtype=dtype,
+        device_map="auto" if shard else None,
     )
     tokenizer = load_tokenizer(recipe.model, manifest_path)
     if recipe.rotation.mode != "none":
@@ -581,7 +593,12 @@ def load_runtime_model(
     modules = dict(model.named_modules())
     for name in config["layers"]:
         original = modules[name]
-        case = make_regime_case(config, tensors, name, regime, device, allow_sparse)
+        layer_device: str | torch.device = device
+        if shard:
+            layer_device = original.weight.device
+        case = make_regime_case(
+            config, tensors, name, regime, layer_device, allow_sparse
+        )
         replacement = CompressedLinear(original, case, regime, recipe)
         if compile_model:
             replacement = torch.compile(replacement, mode="max-autotune")
