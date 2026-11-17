@@ -1,0 +1,91 @@
+# Copyright (c) 2026 QDrift Authors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""Regenerate every figure the paper uses, into ``figs/`` and ``figs/pdf/``.
+
+A thin driver over the figure modules in this directory so the whole figure set
+can be rebuilt with one command (the table counterpart is
+``visualize/tables/paper_tables.py``).  Each figure is written twice,
+``figs/<name>.png`` and ``figs/pdf/<name>.pdf``, by ``style.save``.
+
+    python visualize/plots/paper_figures.py           # build all
+    python visualize/plots/paper_figures.py --only heatmaps
+
+Figure -> paper:
+    drift (Fig. 1) · alpha_curve (Fig. 3) · ppl_vs_sparsity (Fig. 4) ·
+    heatmaps (Fig. 5)
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import style as S  # noqa: E402
+import drift_accumulation as drift  # noqa: E402
+import mixture_grid as grid  # noqa: E402
+
+# The complete (alpha, gamma) grids, used for both the heatmaps and the alpha
+# curves; extend as more settings finish.
+GRID_SETTINGS = [
+    ("llama2-7b", "w4a4_s50"), ("llama2-7b", "w4a4_s70"),
+    ("llama3.1-8b", "w4a4_s50"), ("llama3.1-8b", "w4a4_s70"),
+]
+
+
+def build_drift() -> None:
+    """Figure 1: the three drift-accumulation panels (LLaMA-2-7B)."""
+    argv = sys.argv
+    sys.argv = ["paper_figures", "--model", "llama2-7b"]
+    try:
+        drift.main()
+    except SystemExit as err:  # no drift minitest JSON yet
+        print(f"skip drift figure: {err}")
+    finally:
+        sys.argv = argv
+
+
+def build_alpha_curve() -> None:
+    """Figure 3: the alpha-sweep U-curve, every complete gamma=0 line."""
+    for model, setting in GRID_SETTINGS:
+        points = grid.load_points(model, setting)
+        if points:
+            grid.alpha_curve(points, model, setting)
+
+
+def build_heatmaps() -> None:
+    """Figure 5: the (alpha, gamma) heatmaps, every complete grid."""
+    for model, setting in GRID_SETTINGS:
+        points = grid.load_points(model, setting)
+        if points:
+            grid.alpha_gamma_heatmap(points, model, setting)
+
+
+def build_ppl_vs_sparsity() -> None:
+    """Figure 4: perplexity against sparsity for W4A4, per model."""
+    for model in ("llama2-7b", "llama3.1-8b"):
+        grid.ppl_vs_sparsity(model, "w4a4")
+
+
+BUILDERS = {
+    "drift": build_drift,
+    "alpha_curve": build_alpha_curve,
+    "ppl_vs_sparsity": build_ppl_vs_sparsity,
+    "heatmaps": build_heatmaps,
+}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--only", nargs="*", choices=list(BUILDERS), help="build a subset")
+    args = parser.parse_args()
+    S.setup()
+    for name in args.only or list(BUILDERS):
+        print(f"== {name} ==")
+        BUILDERS[name]()
+
+
+if __name__ == "__main__":
+    main()
