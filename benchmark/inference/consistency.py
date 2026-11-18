@@ -235,8 +235,6 @@ def main(argv=None) -> int:
     recipe = CompressionRecipe.from_config(config)
     if recipe.activation.bits != 4 or recipe.weight.bits != 4:
         raise SystemExit("consistency check expects a W4A4 checkpoint")
-    if recipe.rotation.mode != "none":
-        raise SystemExit("consistency check expects --rotation none")
 
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)

@@ -3,9 +3,12 @@
 """Checkpoint-backed fast inference benchmark.
 
 This backend reuses the checkpoint cases from ``benchmark.eval.runtime`` with
-the small graph-friendly runtime in this package.  It is intended for
-checkpoints produced with ``--rotation none``; the HF-backed engine remains the
-default for rotated checkpoints.
+the small graph-friendly runtime in this package.  It supports both ``--rotation
+none`` and ``--rotation hadamard`` checkpoints: for the rotated case it replays
+the same QuaRot rotation on the embeddings and head, uses weightless RMSNorm
+(the scales are already fused into the compressed weights), and installs the
+online Hadamard transforms before ``o_proj`` and ``down_proj``, so the timing
+path matches the rotated model that the perplexity tables report.
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ from benchmark.inference.model import (
 from benchmark.inference.weights import SafetensorStore
 from qdrift.compress.recipe import CompressionRecipe
 from qdrift.models.backbone import resolve_model_source
+from qdrift.quarot.hadamard import matmul_hadU, random_hadamard_matrix
 
 __all__ = ["build_checkpoint_model", "evaluate_inference"]
 
@@ -47,6 +51,65 @@ _REGIME_LABELS = {
     "quant": "int4_marlin",
     "joint": "joint_sparse_int4",
 }
+
+# Matches ``qdrift.models.rotation._CHUNK_ROWS`` so the fp64 folds stay
+# bit-identical to the compress/eval path.
+_ROTATE_CHUNK = 8192
+
+
+def _rotate_rows(weight: torch.Tensor, q: torch.Tensor) -> None:
+    """Rotate rows in place (``weight @ q``) in fp64, matching rotation.py."""
+    dtype = weight.dtype
+    rows = weight.shape[0]
+    chunk = min(rows, _ROTATE_CHUNK)
+    for start in range(0, rows, chunk):
+        end = min(start + chunk, rows)
+        part = weight[start:end].to(device=q.device, dtype=torch.float64)
+        weight[start:end] = torch.matmul(part, q).to(dtype=dtype)
+
+
+def _fuse_norm_scale(weight: torch.Tensor, scale: torch.Tensor) -> None:
+    """Multiply each row by the fp64 norm scale, matching ``fuse_ln_linear``."""
+    dtype = weight.dtype
+    scale = scale.double()
+    rows = weight.shape[0]
+    chunk = min(rows, _ROTATE_CHUNK)
+    for start in range(0, rows, chunk):
+        end = min(start + chunk, rows)
+        weight[start:end] = (weight[start:end].double() * scale).to(dtype)
+
+
+def _install_online_hadamards(
+    attn: Attention,
+    mlp: MLP,
+    num_heads: int,
+    head_dim: int,
+) -> None:
+    """Install the runtime Hadamards that cannot be fused into the weights.
+
+    Mirrors ``qdrift.models.rotation.install_online_hadamards`` for the minimal
+    graph runtime: the O projection gets the per-head then full Hadamard, the
+    MLP down projection (which follows SiLU) gets the full Hadamard.
+    """
+
+    def o_hook(module, inputs):
+        if not inputs:
+            return None
+        value = inputs[0]
+        shape = value.shape
+        work = value.reshape(*shape[:-1], num_heads, head_dim)
+        work = matmul_hadU(work)  # H_head per head
+        work = matmul_hadU(work.reshape(shape))  # H_hidden
+        return (work,) + inputs[1:]
+
+    def down_hook(module, inputs):
+        if not inputs:
+            return None
+        work = matmul_hadU(inputs[0])
+        return (work,) + inputs[1:]
+
+    attn.o_proj.register_forward_pre_hook(o_hook)
+    mlp.down_proj.register_forward_pre_hook(down_hook)
 
 
 def _linear(
@@ -79,15 +142,24 @@ def build_checkpoint_model(
     linear_factory=None,
     allow_sparse: bool = True,
 ) -> tuple[CausalLM, dict]:
-    if recipe.rotation.mode != "none":
-        raise ValueError(
-            "the inference engine requires --rotation none; use --engine hf "
-            "for rotated checkpoints"
-        )
     checkpoint = Path(checkpoint)
     config = json.loads(checkpoint.with_suffix(".json").read_text(encoding="utf-8"))
     source = resolve_model_source(recipe.model, manifest_path)
     spec = ModelSpec.from_dir(source)
+    rotated = recipe.rotation.mode != "none"
+    if rotated and spec.tie_word_embeddings:
+        raise NotImplementedError(
+            "rotated inference with tied embeddings is not supported by the "
+            "minimal runtime; use the default HF engine instead"
+        )
+    q: torch.Tensor | None = None
+    if rotated:
+        # ``random_hadamard_matrix`` draws from the CPU global RNG, exactly as
+        # the compress/eval path does after its ``torch.manual_seed``.
+        torch.manual_seed(recipe.rotation.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(recipe.rotation.seed)
+        q = random_hadamard_matrix(spec.hidden_size, device)
     store = SafetensorStore(source)
     tensors = load_file(str(checkpoint))
     if any(key.endswith(".weight_smooth_scale") for key in tensors):
@@ -98,6 +170,8 @@ def build_checkpoint_model(
     make_linear_layer = linear_factory or _linear
 
     embed_weight = store.get("model.embed_tokens.weight", device).half()
+    if q is not None:
+        _rotate_rows(embed_weight, q)
     # from_pretrained skips random init, which would otherwise draw from the
     # CUDA RNG (and fail if an earlier graph capture left it mid-capture).
     embed_tokens = nn.Embedding.from_pretrained(embed_weight, freeze=True)
@@ -120,28 +194,49 @@ def build_checkpoint_model(
         down_proj = make_linear_layer(config, tensors, f"{mlp_prefix}.down_proj", regime, recipe, device, allow_sparse)
 
         input_norm = RMSNorm(spec.hidden_size, spec.rms_norm_eps, device)
-        input_norm.weight = nn.Parameter(
-            store.get(f"{prefix}.input_layernorm.weight", device).half(),
-            requires_grad=False,
-        )
         post_norm = RMSNorm(spec.hidden_size, spec.rms_norm_eps, device)
-        post_norm.weight = nn.Parameter(
-            store.get(f"{prefix}.post_attention_layernorm.weight", device).half(),
-            requires_grad=False,
-        )
+        if q is None:
+            # Un-rotated checkpoints keep the original norm scales here; the
+            # rotated ones have them fused into the compressed weights, so the
+            # norms stay weightless (all-ones).
+            input_norm.weight = nn.Parameter(
+                store.get(f"{prefix}.input_layernorm.weight", device).half(),
+                requires_grad=False,
+            )
+            post_norm.weight = nn.Parameter(
+                store.get(f"{prefix}.post_attention_layernorm.weight", device).half(),
+                requires_grad=False,
+            )
 
         attn = Attention(spec, index, q_proj, k_proj, v_proj, o_proj, rotary)
         mlp = MLP(gate_proj, up_proj, down_proj)
+        if q is not None:
+            _install_online_hadamards(
+                attn, mlp, spec.num_attention_heads, spec.head_dim
+            )
         layers.append(Block(input_norm, attn, post_norm, mlp))
         del q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj
 
     norm = RMSNorm(spec.hidden_size, spec.rms_norm_eps, device)
-    norm.weight = nn.Parameter(
-        store.get("model.norm.weight", device).half(), requires_grad=False
-    )
+    final_norm_scale: torch.Tensor | None = None
+    if q is None:
+        norm.weight = nn.Parameter(
+            store.get("model.norm.weight", device).half(), requires_grad=False
+        )
+    else:
+        final_norm_scale = store.get("model.norm.weight", device).half()
 
     tied = spec.tie_word_embeddings or ("lm_head.weight" not in store)
-    lm_head = None if tied else DenseLinear(store.get("lm_head.weight", device))
+    if tied:
+        lm_head = None
+    else:
+        head_weight = store.get("lm_head.weight", device).half()
+        if q is not None:
+            assert final_norm_scale is not None
+            # Compress/eval fuses the final norm into the head, then rotates it.
+            _fuse_norm_scale(head_weight, final_norm_scale)
+            _rotate_rows(head_weight, q)
+        lm_head = DenseLinear(head_weight)
     store.close()
 
     model = CausalLM(
