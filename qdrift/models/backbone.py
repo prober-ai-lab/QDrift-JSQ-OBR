@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import torch
@@ -82,6 +83,24 @@ def load_backbone(
     }
     if device_map is not None:
         kwargs["device_map"] = device_map
+        # Force GPU-only placement: accelerate's ``device_map="auto"`` otherwise
+        # offloads some layers to CPU/meta, and the compressed-eval Triton kernels
+        # require CUDA tensors (they fail with "cannot be accessed from Triton (cpu
+        # tensor?)").  Give every visible GPU a memory budget and omit "cpu" so the
+        # whole model is packed onto the GPUs (7B/8B/13B all fit across the cards).
+        # ``QDRIFT_SHARD_MAX_MEM_GIB`` forces a smaller per-GPU budget (used to make
+        # a model that would fit on one card span several, e.g. for shard tests).
+        if isinstance(device_map, str) and torch.cuda.is_available():
+            override = os.environ.get("QDRIFT_SHARD_MAX_MEM_GIB")
+            max_memory: dict[int, str] = {}
+            for i in range(torch.cuda.device_count()):
+                if override:
+                    gib = float(override)
+                else:
+                    free, _total = torch.cuda.mem_get_info(i)
+                    gib = free / (1024**3) * 0.85
+                max_memory[i] = f"{gib:.1f}GiB"
+            kwargs["max_memory"] = max_memory
     model = AutoModelForCausalLM.from_pretrained(source, **kwargs)
     if device_map is None:
         if offload:

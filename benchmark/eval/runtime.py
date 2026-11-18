@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import platform
 from dataclasses import dataclass, replace
@@ -500,15 +501,26 @@ class CompressedLinear(torch.nn.Module):
         flat = x.reshape(-1, self.in_features)
         if flat.dtype != torch.float16:
             flat = flat.to(torch.float16)
-        if self.case.semi_weight is not None:
-            bias = (
-                self.bias.to(device=flat.device, dtype=flat.dtype)
-                if self.bias is not None
-                else None
-            )
-            output = semi_structured_linear(flat, self.case.semi_weight, bias)
-            return output.reshape(*shape[:-1], self.out_features)
-        output = run_regime_recipe(self.recipe, self.case, self.regime, flat)
+        # Under sharded eval (device_map across GPUs) this layer's activation and
+        # weights live on a non-default GPU; the Triton/CUTLASS kernels launch on
+        # the *current* device, so pin it to the tensor's device or they fail with
+        # "Pointer argument cannot be accessed from Triton (cpu tensor?)".  On a
+        # single GPU this is a no-op, so the non-shard path stays byte-identical.
+        ctx = (
+            torch.cuda.device(flat.device)
+            if flat.is_cuda
+            else contextlib.nullcontext()
+        )
+        with ctx:
+            if self.case.semi_weight is not None:
+                bias = (
+                    self.bias.to(device=flat.device, dtype=flat.dtype)
+                    if self.bias is not None
+                    else None
+                )
+                output = semi_structured_linear(flat, self.case.semi_weight, bias)
+                return output.reshape(*shape[:-1], self.out_features)
+            output = run_regime_recipe(self.recipe, self.case, self.regime, flat)
         if self.bias is not None:
             output = output + self.bias.to(output.dtype)
         return output.reshape(*shape[:-1], self.out_features)
