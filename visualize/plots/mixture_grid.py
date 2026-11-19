@@ -106,43 +106,6 @@ def alpha_curve(points: list[dict], model: str, setting: str) -> None:
     S.save(fig, _name(model, "alpha-curve", setting))
 
 
-def alpha_gamma_heatmap(points: list[dict], model: str, setting: str) -> None:
-    """Validation perplexity over the common 3x3 (alpha, gamma) grid."""
-    axis = [0.0, 0.25, 0.5]
-    grid = np.full((len(axis), len(axis)), np.nan)
-    for p in points:
-        if p["alpha"] in axis and p["gamma"] in axis:
-            grid[axis.index(p["alpha"]), axis.index(p["gamma"])] = p["val"]
-    if np.isnan(grid).all():
-        print("heatmap: no points on the 3x3 grid, skipping")
-        return
-    fig, ax = S.plt.subplots(figsize=(3.3, 2.8))
-    finite = grid[np.isfinite(grid)]
-    im = ax.imshow(
-        grid, cmap=S.DIVERGING.reversed(), aspect="auto",
-        vmin=float(finite.min()), vmax=float(np.percentile(finite, 90)),
-    )
-    for i in range(len(axis)):
-        for j in range(len(axis)):
-            if np.isfinite(grid[i, j]):
-                best = grid[i, j] == np.nanmin(grid)
-                ax.text(
-                    j, i, f"{grid[i, j]:.1f}", ha="center", va="center",
-                    fontsize=7.5, color=S.INK, fontweight="bold" if best else "normal",
-                )
-                if i == 0 and j == 0:
-                    ax.text(j, i + 0.33, "OBR", ha="center", va="center",
-                            fontsize=6, color=S.INK_2)
-    ax.set_xticks(range(len(axis)), [f"{g:g}" for g in axis])
-    ax.set_yticks(range(len(axis)), [f"{a:g}" for a in axis])
-    ax.set_xlabel(r"clean weight $\gamma$")
-    ax.set_ylabel(r"asymmetric weight $\alpha$")
-    ax.grid(False)
-    S.panel_label(ax, f"{_pretty(setting)} validation PPL")
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="PPL (lower is better)")
-    S.save(fig, _name(model, "alpha-gamma-heatmap", setting))
-
-
 def ppl_vs_sparsity(model: str, quant: str) -> None:
     """Test perplexity against sparsity for one bit-width.
 
@@ -231,7 +194,6 @@ def main() -> None:
     if not points:
         raise SystemExit(f"no results/v2 points for {args.model} / {args.setting}")
     alpha_curve(points, args.model, args.setting)
-    alpha_gamma_heatmap(points, args.model, args.setting)
 
 
 if __name__ == "__main__":

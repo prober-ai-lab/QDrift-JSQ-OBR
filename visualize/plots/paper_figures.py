@@ -8,11 +8,10 @@ can be rebuilt with one command (the table counterpart is
 ``figs/<name>.png`` and ``figs/pdf/<name>.pdf``, by ``style.save``.
 
     python visualize/plots/paper_figures.py           # build all
-    python visualize/plots/paper_figures.py --only heatmaps
+    python visualize/plots/paper_figures.py --only drift
 
 Figure -> paper:
-    drift (Fig. 1) · alpha_curve (Fig. 3) · ppl_vs_sparsity (Fig. 4) ·
-    heatmaps (Fig. 5)
+    drift (Fig. 1) · alpha_curve (Fig. 3) · ppl_vs_sparsity (Fig. 4)
 """
 
 from __future__ import annotations
@@ -27,11 +26,10 @@ import style as S  # noqa: E402
 import drift_accumulation as drift  # noqa: E402
 import mixture_grid as grid  # noqa: E402
 
-# The complete (alpha, gamma) grids, used for both the heatmaps and the alpha
-# curves; extend as more settings finish.
+# The (alpha, gamma) grids that drive the alpha-sweep curves (Fig. 3); the paper
+# shows LLaMA-2-7B, with cross-model generalization carried by the main table.
 GRID_SETTINGS = [
     ("llama2-7b", "w4a4_s50"), ("llama2-7b", "w4a4_s70"),
-    ("llama3.1-8b", "w4a4_s50"), ("llama3.1-8b", "w4a4_s70"),
 ]
 
 
@@ -55,25 +53,15 @@ def build_alpha_curve() -> None:
             grid.alpha_curve(points, model, setting)
 
 
-def build_heatmaps() -> None:
-    """Figure 5: the (alpha, gamma) heatmaps, every complete grid."""
-    for model, setting in GRID_SETTINGS:
-        points = grid.load_points(model, setting)
-        if points:
-            grid.alpha_gamma_heatmap(points, model, setting)
-
-
 def build_ppl_vs_sparsity() -> None:
-    """Figure 4: perplexity against sparsity for W4A4, per model."""
-    for model in ("llama2-7b", "llama3.1-8b"):
-        grid.ppl_vs_sparsity(model, "w4a4")
+    """Figure 4: perplexity against sparsity for W4A4 (LLaMA-2-7B)."""
+    grid.ppl_vs_sparsity("llama2-7b", "w4a4")
 
 
 BUILDERS = {
     "drift": build_drift,
     "alpha_curve": build_alpha_curve,
     "ppl_vs_sparsity": build_ppl_vs_sparsity,
-    "heatmaps": build_heatmaps,
 }
 
 
