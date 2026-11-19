@@ -24,7 +24,7 @@ import argparse
 
 import tablekit as T
 
-MODEL_DISP = {"llama2-7b": "7B", "llama3.1-8b": "8B"}
+MODEL_DISP = {"llama2-7b": "7B", "llama3.1-8b": "8B", "llama2-13b": "13B"}
 SPARSITY_DISP = {"s50": r"50\%", "s60": r"60\%", "s70": r"70\%"}
 CALIB = "128x1024"
 
@@ -48,6 +48,9 @@ MAIN_SPEC = [
     ("llama3.1-8b", "W4A4", "s70"), ("llama3.1-8b", "W4A4", "4to8p40-obs"),
     ("llama3.1-8b", "W4A16", "s50"), ("llama3.1-8b", "W4A16", "s70"),
     ("llama3.1-8b", "W2A16", "s50"),
+    ("llama2-13b", "W4A4", "s50"), ("llama2-13b", "W4A4", "s60"),
+    ("llama2-13b", "W4A4", "s70"), ("llama2-13b", "W4A4", "4to8p40-obs"),
+    ("llama2-13b", "W2A16", "s50"),
 ]
 
 
@@ -296,6 +299,39 @@ def _render(colspec: str, header: str, blocks: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
+# --------------------------------------------------------------------------- #
+# Table 8 -- zero-shot accuracy (mean over the lm-eval task set), OBR vs selected
+# --------------------------------------------------------------------------- #
+def zeroshot(runs) -> tuple[str, str]:
+    """Average zero-shot accuracy, OBR vs the val-selected QDrift mixture. Mirrors
+    MAIN_SPEC; rows without a ``zeroshot`` field (not yet evaluated) are skipped."""
+    rows: list[str] = []
+    for model, bits, pattern in MAIN_SPEC:
+        tags = runs.get((model, bits, pattern, CALIB))
+        if not tags:
+            continue
+        obr, _, sel = T.select(tags)
+        if obr is None or sel is None:
+            continue
+        oz, sz = obr.get("zeroshot"), sel.get("zeroshot")
+        if not oz or not sz:
+            print(f"  skip zeroshot row {model} {bits} {pattern}: no zeroshot")
+            continue
+        pairwise = pattern.startswith("4to8")
+        setting = T.BITS_LABEL[bits] + (" pairwise 4:8" if pairwise else "")
+        sparsity = "4:8" if pairwise else SPARSITY_DISP[pattern]
+        oa, sa = float(oz["avg"]), float(sz["avg"])
+        rows.append(" & ".join([
+            MODEL_DISP[model], setting, sparsity,
+            f"{oa:.1f}", f"$\\mathbf{{{sa:.1f}}}$", f"${sa - oa:+.1f}$",
+        ]))
+    if not rows:
+        raise SystemExit("zeroshot: no results carry a zeroshot field yet")
+    header = r"Model & Setting & Sparsity & OBR & QDrift & $\Delta$"
+    body = _render("lll" + "c" * 3, header, [rows])
+    return "zeroshot", body
+
+
 BUILDERS = {
     "main_results": main_results,
     "seed_robustness": seed_robustness,
@@ -306,6 +342,7 @@ BUILDERS = {
     "compression_time": compression_time,
     "asymmetric_overfit": asymmetric_overfit,
     "localization": localization,
+    "zeroshot": zeroshot,
 }
 
 
