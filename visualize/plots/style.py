@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared style, loading, and saving for the figure scripts.
 
-Every figure is written twice under one name: ``figs/<name>.png`` and
+Every figure is written twice under one name: ``figs/png/<name>.png`` and
 ``figs/pdf/<name>.pdf``.  Names are flat and descriptive,
 ``<origin>__<producer>__<model>__<content>``, e.g.
 ``minitest__drift_accumulation__llama2-7b__input-drift-vs-depth``.
@@ -143,9 +143,10 @@ def figure_name(stem: str, model: str, content: str) -> str:
 
 
 def save(fig: plt.Figure, name: str) -> None:
-    """Write ``figs/<name>.png`` and ``figs/pdf/<name>.pdf``."""
+    """Write ``figs/png/<name>.png`` and ``figs/pdf/<name>.pdf``."""
+    (FIGS / "png").mkdir(parents=True, exist_ok=True)
     (FIGS / "pdf").mkdir(parents=True, exist_ok=True)
-    png = FIGS / f"{name}.png"
+    png = FIGS / "png" / f"{name}.png"
     pdf = FIGS / "pdf" / f"{name}.pdf"
     fig.savefig(png, dpi=300, bbox_inches="tight")
     fig.savefig(pdf, bbox_inches="tight", metadata={"CreationDate": None})  # reproducible bytes

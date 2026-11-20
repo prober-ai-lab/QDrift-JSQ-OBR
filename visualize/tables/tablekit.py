@@ -6,7 +6,7 @@ Every table is written twice under one name: ``tables/tex/<name>.tex`` -- a book
 ``tabular`` fragment that the paper ``\\input``s inside its own ``table`` float --
 and ``tables/pdf/<name>.pdf`` -- the same fragment compiled standalone with
 ``pdflatex`` for preview and direct inclusion.  This mirrors the figure pipeline
-in ``visualize/plots/style.py`` (``figs/<name>.png`` + ``figs/pdf/<name>.pdf``).
+in ``visualize/plots/style.py`` (``figs/png/<name>.png`` + ``figs/pdf/<name>.pdf``).
 
 Numbers are pulled live from the v2 result records so a table never drifts from
 the campaign.  The mixture is selected on WikiText-2 *validation* perplexity; the
@@ -184,15 +184,15 @@ def save_table(name: str, body: str) -> None:
 
     ``tables/tex/<name>.tex`` -- booktabs fragment the paper ``\\input``s;
     ``tables/pdf/<name>.pdf`` -- standalone compile (vector, for inclusion);
-    ``tables/<name>.png``   -- 300 dpi raster of that PDF, for preview.
+    ``tables/png/<name>.png`` -- 300 dpi raster of that PDF, for preview.
     """
     TABLES.mkdir(parents=True, exist_ok=True)
-    (TABLES / "pdf").mkdir(parents=True, exist_ok=True)
-    (TABLES / "tex").mkdir(parents=True, exist_ok=True)
+    for sub in ("tex", "pdf", "png"):
+        (TABLES / sub).mkdir(parents=True, exist_ok=True)
     tex = TABLES / "tex" / f"{name}.tex"
     tex.write_text(body.rstrip() + "\n", encoding="utf-8")
     pdf = TABLES / "pdf" / f"{name}.pdf"
-    png = TABLES / f"{name}.png"
+    png = TABLES / "png" / f"{name}.png"
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)

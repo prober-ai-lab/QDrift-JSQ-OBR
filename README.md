@@ -4,9 +4,18 @@
 
 **A constrained mixture of reconstruction targets for joint sparsification and low-bit quantization of LLMs**
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Python](https://img.shields.io/badge/python-3.12-3776AB.svg)
-![PyTorch](https://img.shields.io/badge/pytorch-%E2%89%A52.6-EE4C2C.svg)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/pytorch-%E2%89%A52.6-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![Transformers](https://img.shields.io/badge/transformers-%E2%89%A55.0-FFD21E?style=flat-square&logo=huggingface&logoColor=black)](https://github.com/huggingface/transformers)
+[![CUDA](https://img.shields.io/badge/CUTLASS-INT4%20sparse-76B900?style=flat-square&logo=nvidia&logoColor=white)](https://github.com/NVIDIA/cutlass)
+[![Ruff](https://img.shields.io/badge/code%20style-ruff-D7FF64?style=flat-square&logo=ruff&logoColor=black)](https://github.com/astral-sh/ruff)
+
+[![Models](https://img.shields.io/badge/models-LLaMA--2%20%7C%20LLaMA--3.1-0467DF?style=flat-square&logo=meta&logoColor=white)](modelzoo/manifest.yaml)
+[![Compression](https://img.shields.io/badge/compression-W4A4KV4%20%7C%20W2A16-8A2BE2?style=flat-square)](#highlights)
+[![Sparsity](https://img.shields.io/badge/sparsity-pairwise%204%3A8%20%7C%20unstructured-orange?style=flat-square)](#sparse-layouts)
+[![Eval](https://img.shields.io/badge/eval-WikiText--2%20%7C%20lm--eval-informational?style=flat-square)](#reproducing-the-paper)
+[![Training-free](https://img.shields.io/badge/training-free-success?style=flat-square)](#qdrift)
 
 </div>
 
@@ -140,9 +149,9 @@ Everything the paper shows is generated from the result records. No number, tabl
 written by hand.
 
 ```bash
-python visualize/tables/paper_tables.py    # tables/tex/*.tex · tables/pdf/*.pdf · tables/*.png
+python visualize/tables/paper_tables.py    # tables/tex/*.tex · tables/pdf/*.pdf · tables/png/*.png
 python visualize/tables/paper_numbers.py   # tables/tex/numbers.tex: \qd{<key>} for every number in the text
-python visualize/plots/paper_figures.py    # figs/*.png · figs/pdf/*.pdf
+python visualize/plots/paper_figures.py    # figs/png/*.png · figs/pdf/*.pdf
 ```
 
 - **Protocol.** WikiText-2 only: calibrate on train, select $(\alpha,\gamma)$ on validation, report

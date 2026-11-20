@@ -5,7 +5,7 @@
 A thin driver over the figure modules in this directory so the whole figure set
 can be rebuilt with one command (the table counterpart is
 ``visualize/tables/paper_tables.py``).  Each figure is written twice,
-``figs/<name>.png`` and ``figs/pdf/<name>.pdf``, by ``style.save``.
+``figs/png/<name>.png`` and ``figs/pdf/<name>.pdf``, by ``style.save``.
 
     python visualize/plots/paper_figures.py           # build all
     python visualize/plots/paper_figures.py --only drift
