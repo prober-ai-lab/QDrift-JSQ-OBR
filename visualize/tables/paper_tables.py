@@ -5,8 +5,8 @@
 Each table is written to ``tables/<name>.tex`` (``\\input`` it in the paper) and
 ``tables/pdf/<name>.pdf`` (standalone, for preview or direct inclusion).  Data
 tables are pulled live from ``results/v2`` so they track the campaign; the
-measured-constant tables (the pre-campaign asymmetric-overfit and localization
-studies, and the GEMM microbenchmark) carry their numbers inline.
+measured-constant tables (the pre-campaign localization study and the GEMM
+microbenchmark) carry their numbers inline.
 
     python visualize/tables/paper_tables.py            # build all
     python visualize/tables/paper_tables.py --only main_results seed_robustness
@@ -15,7 +15,7 @@ studies, and the GEMM microbenchmark) carry their numbers inline.
 Name -> paper table:
     main_results (3) · seed_robustness (3b) · alpha_sweep (4) · mask_selection (5)
     · gemm_efficiency (6) · alpha_gamma_grid (7) · compression_time
-    · asymmetric_overfit (1) · localization (2)
+    · asymmetric_overfit (1) · localization (2) · zeroshot (3c) · zeroshot_full (F1)
 """
 
 from __future__ import annotations
@@ -259,17 +259,33 @@ def gemm_efficiency(_runs) -> tuple[str, str]:
     return "gemm_efficiency", body
 
 
-def asymmetric_overfit(_runs) -> tuple[str, str]:
-    """Table 1 -- OBR vs the pure asymmetric target (pre-campaign calibration)."""
-    rows = [
-        r"W2A16 g128 & $32\times1024$ & 50\% & 26.46 & 12.41",
-        r"W4A4KV4 & $32\times1024$ & 50\% & 7.74 & 7.94",
-        r"W4A4KV4 & $32\times1024$ & 70\% & 38.38 & 52.96",
-        r"W4A4KV4 & $128\times2048$ & 50\% & 7.73 & 7.38",
-        r"W4A4KV4 & $128\times2048$ & 70\% & 53.0 & 46.1",
-    ]
-    header = r"Setting & Calibration & Sparsity & OBR & Asymmetric"
-    return "asymmetric_overfit", _render("lll" + "cc", header, [rows])
+OVERFIT_SPEC = [
+    (model, bits, pattern)
+    for model in ("llama2-7b", "llama3.1-8b", "llama2-13b")
+    for bits, pattern in (("W4A4", "s50"), ("W4A4", "s60"), ("W4A4", "s70"),
+                          ("W4A16", "s70"), ("W2A16", "s50"))
+]
+
+
+def asymmetric_overfit(runs) -> tuple[str, str]:
+    """Table 1 -- OBR vs the pure asymmetric target (1, 0) on the main calibration."""
+    blocks: list[list[str]] = []
+    for model, bits, pattern in OVERFIT_SPEC:
+        tags = runs.get((model, bits, pattern, CALIB))
+        if not tags:
+            print(f"  skip overfit row {model} {bits} {pattern}: no data")
+            continue
+        obr, pure, _ = T.select(tags)
+        if obr is None or pure is None:
+            continue
+        if not blocks or blocks[-1][0].split(" & ")[0] != MODEL_DISP[model]:
+            blocks.append([])
+        blocks[-1].append(" & ".join([
+            MODEL_DISP[model], T.BITS_LABEL[bits], SPARSITY_DISP[pattern],
+            T.ppl_cell(obr), T.ppl_cell(pure), f"${T.delta_vs_obr(pure, obr):+.1f}\\%$",
+        ]))
+    header = r"Model & Setting & Sparsity & OBR & Asymmetric $(1,0)$ & vs OBR"
+    return "asymmetric_overfit", _render("lllccc", header, blocks)
 
 
 def localization(_runs) -> tuple[str, str]:
@@ -300,13 +316,24 @@ def _render(colspec: str, header: str, blocks: list[list[str]]) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Table 8 -- zero-shot accuracy (mean over the lm-eval task set), OBR vs selected
+# Table 3c / F1 -- zero-shot accuracy per task, OBR vs the selected mixture
 # --------------------------------------------------------------------------- #
-def zeroshot(runs) -> tuple[str, str]:
-    """Average zero-shot accuracy, OBR vs the val-selected QDrift mixture. Mirrors
-    MAIN_SPEC; rows without a ``zeroshot`` field (not yet evaluated) are skipped."""
-    rows: list[str] = []
+ZEROSHOT_TASKS = (("piqa", "PIQA"), ("hellaswag", "HellaS."), ("arc_easy", "ARC-e"),
+                  ("arc_challenge", "ARC-c"), ("winogrande", "Wino."),
+                  ("lambada_openai", "LAMB."), ("avg", "Avg."))
+# Main text: the deployable layout and the two ends of the bit-width range.
+ZEROSHOT_MAIN = {("W4A4", "s50"), ("W4A4", "4to8p-obs"), ("W4A4", "4to8p40-obs"),
+                 ("W2A16", "s50")}
+
+
+def _zeroshot_rows(runs, keep) -> list[list[str]]:
+    """Two rows (OBR, QDrift) per setting, one block per model; in every column
+    the higher accuracy of the pair is bold (zero-shot is not uniformly in
+    QDrift's favor).  Settings without a ``zeroshot`` field are skipped."""
+    blocks: dict[str, list[str]] = {}
     for model, bits, pattern in MAIN_SPEC:
+        if not keep(bits, pattern):
+            continue
         tags = runs.get((model, bits, pattern, CALIB))
         if not tags:
             continue
@@ -318,24 +345,33 @@ def zeroshot(runs) -> tuple[str, str]:
             print(f"  skip zeroshot row {model} {bits} {pattern}: no zeroshot")
             continue
         pairwise = pattern.startswith("4to8")
-        setting = T.BITS_LABEL[bits] + (" pairwise 4:8" if pairwise else "")
-        sparsity = "4:8" if pairwise else SPARSITY_DISP[pattern]
-        oa, sa = float(oz["avg"]), float(sz["avg"])
-        # bold the higher accuracy; zero-shot is not uniformly in QDrift's favor
-        ocell, scell = f"{oa:.1f}", f"{sa:.1f}"
-        if round(sa, 1) > round(oa, 1):
-            scell = f"$\\mathbf{{{scell}}}$"
-        elif round(oa, 1) > round(sa, 1):
-            ocell = f"$\\mathbf{{{ocell}}}$"
-        rows.append(" & ".join([
-            MODEL_DISP[model], setting, sparsity,
-            ocell, scell, f"${sa - oa:+.1f}$",
-        ]))
-    if not rows:
+        setting = T.BITS_LABEL[bits] + (" 4:8p" if pairwise else f" {SPARSITY_DISP[pattern]}")
+        ocells, scells = [], []
+        for key, _ in ZEROSHOT_TASKS:
+            oa, sa = round(float(oz[key]), 1), round(float(sz[key]), 1)
+            ocells.append(f"$\\mathbf{{{oa:.1f}}}$" if oa > sa else f"{oa:.1f}")
+            scells.append(f"$\\mathbf{{{sa:.1f}}}$" if sa > oa else f"{sa:.1f}")
+        rows = blocks.setdefault(model, [])
+        rows.append(" & ".join([MODEL_DISP[model], setting, "OBR", *ocells]))
+        rows.append(" & ".join(["", "", f"QDrift {_sel_label(obr, sel)}", *scells]))
+    if not blocks:
         raise SystemExit("zeroshot: no results carry a zeroshot field yet")
-    header = r"Model & Setting & Sparsity & OBR & QDrift & $\Delta$"
-    body = _render("lll" + "c" * 3, header, [rows])
-    return "zeroshot", body
+    return list(blocks.values())
+
+
+def _zeroshot_table(runs, keep) -> str:
+    header = "Model & Setting & Method & " + " & ".join(label for _, label in ZEROSHOT_TASKS)
+    return _render("lll" + "c" * len(ZEROSHOT_TASKS), header, _zeroshot_rows(runs, keep))
+
+
+def zeroshot(runs) -> tuple[str, str]:
+    """Main-text zero-shot table: W4A4 50%, pairwise 4:8 and W2A16 per model."""
+    return "zeroshot", _zeroshot_table(runs, lambda b, p: (b, p) in ZEROSHOT_MAIN)
+
+
+def zeroshot_full(runs) -> tuple[str, str]:
+    """Appendix zero-shot table: every row of Table 3."""
+    return "zeroshot_full", _zeroshot_table(runs, lambda b, p: True)
 
 
 BUILDERS = {
@@ -349,6 +385,7 @@ BUILDERS = {
     "asymmetric_overfit": asymmetric_overfit,
     "localization": localization,
     "zeroshot": zeroshot,
+    "zeroshot_full": zeroshot_full,
 }
 
 
