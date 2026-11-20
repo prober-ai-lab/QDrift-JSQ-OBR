@@ -1,0 +1,16 @@
+\begin{tabular}{lcc}
+\toprule
+Layers with asymmetric target & Test & Val \\
+\midrule
+none (OBR) & 38.38 & 39.88 \\
+blocks 0--3 & 31.71 & 31.38 \\
+blocks 0--7 & 32.43 & 31.16 \\
+blocks 0--11 & 32.91 & 30.93 \\
+blocks 0--15 & 34.96 & 32.54 \\
+blocks 8--31 & 94.32 & 89.12 \\
+attention only & 42.58 & 39.47 \\
+MLP gate/up only & 4227.7 & 4076.3 \\
+MLP down\_proj only & 515.7 & 496.7 \\
+all blocks & 52.96 & 47.67 \\
+\bottomrule
+\end{tabular}

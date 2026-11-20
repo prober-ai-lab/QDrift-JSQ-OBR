@@ -55,7 +55,7 @@ MAIN_SPEC = [
 
 
 def main_results(runs) -> tuple[str, str]:
-    blocks: list[list[str]] = [[], []]
+    blocks: dict[str, list[str]] = {}
     for model, bits, pattern in MAIN_SPEC:
         tags = runs.get((model, bits, pattern, CALIB))
         if not tags:
@@ -72,9 +72,9 @@ def main_results(runs) -> tuple[str, str]:
             MODEL_DISP[model], setting, sparsity,
             T.ppl_cell(obr), qcell, _sel_label(obr, sel),
         ])
-        blocks[0 if model == "llama2-7b" else 1].append(row)
+        blocks.setdefault(model, []).append(row)
     header = r"Model & Setting & Sparsity & OBR & QDrift & $(\alpha,\gamma)$"
-    body = _render("lllccc", header, blocks)
+    body = _render("lllccc", header, list(blocks.values()))
     return "main_results", body
 
 

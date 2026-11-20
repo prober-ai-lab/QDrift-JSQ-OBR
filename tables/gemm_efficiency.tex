@@ -1,0 +1,11 @@
+\begin{tabular}{llcccccc}
+\toprule
+ & & \multicolumn{2}{c}{Prefill ($R{=}2048$)} & & \multicolumn{2}{c}{Decode ($R{=}32$)} & \\
+\cmidrule(lr){3-4}\cmidrule(lr){6-7}
+Layer & Shape ($c_{out}{\times}c_{in}$) & Dense & Sparse & Speedup & Dense & Sparse & Speedup \\
+\midrule
+q/o-proj & $4096\times4096$ & 73.5 & 60.8 & 1.21$\times$ & 31.5 & 16.8 & 1.87$\times$ \\
+gate/up-proj & $11008\times4096$ & 226.9 & 169.1 & 1.34$\times$ & 31.4 & 12.0 & 2.61$\times$ \\
+down-proj & $4096\times11008$ & 163.1 & 143.6 & 1.14$\times$ & 75.9 & 24.8 & \textbf{3.05$\times$} \\
+\bottomrule
+\end{tabular}
