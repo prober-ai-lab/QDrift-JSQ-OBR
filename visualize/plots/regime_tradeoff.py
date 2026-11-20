@@ -67,8 +67,8 @@ def main() -> None:
     mem = [r[2] / 1e9 for r in rows]
     x = list(range(len(rows)))
 
-    # One paper column (3.25 in): the two panels stack, so the 8 pt text prints at ~8 pt.
-    fig, (axp, axm) = S.plt.subplots(2, 1, figsize=(3.3, 4.1))
+    # Two side-by-side panels (left-right), one paper column each.
+    fig, (axp, axm) = S.plt.subplots(1, 2, figsize=(6.6, 2.6))
 
     # Panel A: perplexity (degradation).
     cppl = ["#8a8f98", "#8a8f98", "#d98c5f", "#c0504d"]
