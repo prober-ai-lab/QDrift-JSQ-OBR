@@ -30,6 +30,14 @@ from matplotlib.ticker import MaxNLocator
 
 STEM = "drift_accumulation"
 KEYS = ("comp", "layer")
+# The run the paper reports (Fig. 2, Appendix E): W2A16 g128, 50% SparseGPT, GPTQ,
+# 128x1024 calibration, evaluated on 16 WikiText-2 test sequences of 2048 tokens.
+# Older runs with other recipes share the stem, and merging them would mix recipes,
+# so this one is the default input.
+PAPER_INPUT = S.RESULTS / (
+    "drift_accumulation__llama2-7b__rot-hadamard_128x1024"
+    "__w2_g128_mr_clip_gptq_u0.5_sparsegpt__none+obr+drift.json"
+)
 
 
 def per_block(
@@ -144,6 +152,8 @@ def main() -> None:
     """Render every figure of this minitest."""
     args = S.arguments(__doc__.split("\n\n")[0])
     S.setup()
+    if not args.inputs and args.model == "llama2-7b":
+        args.inputs = [str(PAPER_INPUT)]
     payloads = S.load(STEM, args)
     rows = S.table(payloads, "rows", KEYS)
     nll: dict = {}

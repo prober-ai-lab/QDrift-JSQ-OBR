@@ -52,11 +52,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plots"))
 
 import paper_tables as P  # noqa: E402
 import tablekit as T  # noqa: E402
+from drift_accumulation import PAPER_INPUT as MINITEST  # noqa: E402
 from regime_tradeoff import regimes  # noqa: E402
 
 OUT = T.TABLES / "tex" / "numbers.tex"
-MINITEST = (T.ROOT / "results" / "minitests" / "drift_accumulation__llama2-7b__rot-hadamard_128x1024"
-            "__w2_g128_mr_clip_gptq_u0.5_sparsegpt__none+obr+drift.json")
 TASKS = [key for key, _ in P.ZEROSHOT_TASKS if key != "avg"]
 
 
