@@ -321,9 +321,15 @@ def zeroshot(runs) -> tuple[str, str]:
         setting = T.BITS_LABEL[bits] + (" pairwise 4:8" if pairwise else "")
         sparsity = "4:8" if pairwise else SPARSITY_DISP[pattern]
         oa, sa = float(oz["avg"]), float(sz["avg"])
+        # bold the higher accuracy; zero-shot is not uniformly in QDrift's favor
+        ocell, scell = f"{oa:.1f}", f"{sa:.1f}"
+        if round(sa, 1) > round(oa, 1):
+            scell = f"$\\mathbf{{{scell}}}$"
+        elif round(oa, 1) > round(sa, 1):
+            ocell = f"$\\mathbf{{{ocell}}}$"
         rows.append(" & ".join([
             MODEL_DISP[model], setting, sparsity,
-            f"{oa:.1f}", f"$\\mathbf{{{sa:.1f}}}$", f"${sa - oa:+.1f}$",
+            ocell, scell, f"${sa - oa:+.1f}$",
         ]))
     if not rows:
         raise SystemExit("zeroshot: no results carry a zeroshot field yet")
