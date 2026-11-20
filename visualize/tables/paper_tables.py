@@ -24,7 +24,7 @@ import json
 
 import tablekit as T
 
-MODEL_DISP = {"llama2-7b": "7B", "llama3.1-8b": "8B", "llama2-13b": "13B"}
+MODEL_DISP = {"llama2-7b": "LLaMA-2-7B", "llama3.1-8b": "LLaMA-3.1-8B", "llama2-13b": "LLaMA-2-13B"}
 SPARSITY_DISP = {"s50": r"50\%", "s60": r"60\%", "s70": r"70\%"}
 CALIB = "128x1024"
 
@@ -327,12 +327,21 @@ def localization(_runs) -> tuple[str, str]:
 # Rendering + driver
 # --------------------------------------------------------------------------- #
 def _render(colspec: str, header: str, blocks: list[list[str]]) -> str:
-    """A booktabs tabular whose row blocks are separated by ``\\midrule``."""
+    """A booktabs tabular whose row blocks are separated by ``\\midrule``.  A model
+    name in the first column is printed only where it changes within a block."""
     lines = [r"\begin{tabular}{%s}" % colspec, r"\toprule", header + r" \\", r"\midrule"]
+    names = set(MODEL_DISP.values())
     for i, block in enumerate(blocks):
         if i:
             lines.append(r"\midrule")
-        lines.extend(row + r" \\" for row in block)
+        shown = None
+        for row in block:
+            first, sep, rest = row.partition(" & ")
+            if first in names:
+                if first == shown:
+                    row = sep + rest
+                shown = first
+            lines.append(row + r" \\")
     lines += [r"\bottomrule", r"\end{tabular}"]
     return "\n".join(lines)
 
