@@ -7,14 +7,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/pytorch-%E2%89%A52.6-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](https://pytorch.org/)
-[![Transformers](https://img.shields.io/badge/transformers-%E2%89%A55.0-FFD21E?style=flat-square&logo=huggingface&logoColor=black)](https://github.com/huggingface/transformers)
-[![CUDA](https://img.shields.io/badge/CUTLASS-INT4%20sparse-76B900?style=flat-square&logo=nvidia&logoColor=white)](https://github.com/NVIDIA/cutlass)
-[![Ruff](https://img.shields.io/badge/code%20style-ruff-D7FF64?style=flat-square&logo=ruff&logoColor=black)](https://github.com/astral-sh/ruff)
-
-[![Models](https://img.shields.io/badge/models-LLaMA--2%20%7C%20LLaMA--3.1-0467DF?style=flat-square&logo=meta&logoColor=white)](modelzoo/manifest.yaml)
-[![Compression](https://img.shields.io/badge/compression-W4A4KV4%20%7C%20W2A16-8A2BE2?style=flat-square)](#highlights)
-[![Sparsity](https://img.shields.io/badge/sparsity-pairwise%204%3A8%20%7C%20unstructured-orange?style=flat-square)](#sparse-layouts)
-[![Eval](https://img.shields.io/badge/eval-WikiText--2%20%7C%20lm--eval-informational?style=flat-square)](#reproducing-the-paper)
+[![CUTLASS](https://img.shields.io/badge/CUTLASS-INT4%20sparse-76B900?style=flat-square&logo=nvidia&logoColor=white)](https://github.com/NVIDIA/cutlass)
 [![Training-free](https://img.shields.io/badge/training-free-success?style=flat-square)](#qdrift)
 
 </div>
@@ -22,6 +15,15 @@
 QDrift compresses decoder-only LLMs by pruning, quantization and closed-form error compensation,
 all at once and without retraining. It builds on OBR's two-stage compensation and changes the
 objective that compensation minimizes.
+
+<p align="center">
+  <img src="figs/png/results__regime_tradeoff__llama2-7b__ppl-and-memory.png" width="88%"
+       alt="Perplexity and weight memory of LLaMA-2-7B under no compression, sparsification only, quantization only, and both"/>
+  <br/>
+  <sub><em>Pruning or 4-bit quantization alone costs little perplexity on LLaMA-2-7B, but combining
+  them compounds the error, and the memory saving comes from the quantization. QDrift targets this
+  joint regime.</em></sub>
+</p>
 
 OBR fits each layer to the input *drifted* by the already compressed prefix, so the drift it
 inherits is never corrected. Correcting that drift fully (the asymmetric, GPTAQ-style target)
@@ -37,6 +39,14 @@ $$
 
 The mixture collapses to one Hessian and one per-row target, so OBR's solver, both of its stages,
 GPTQ and the mask score all run unchanged. Setting $(\alpha,\gamma)=(0,0)$ gives OBR exactly.
+
+<p align="center">
+  <img src="figs/png/method__qdrift_pipeline__all__overview.png" width="92%"
+       alt="QDrift pipeline for one linear layer"/>
+  <br/>
+  <sub><em>How QDrift compresses one linear layer. Orange marks what QDrift changes; blue marks OBR's
+  steps, which run unchanged.</em></sub>
+</p>
 
 One global $(\alpha,\gamma)$ is chosen per setting on WikiText-2 *validation* perplexity, from a
 grid that contains OBR. On that criterion QDrift is therefore never worse than OBR.
@@ -63,6 +73,25 @@ with a SparseGPT mask and GPTQ on the late half:
   INT4 at prefill and 1.87–3.05× faster at decode.
 - **Zero-shot.** The gains carry over clearly at two-bit weights. Elsewhere they are roughly
   accuracy-neutral.
+
+<p align="center">
+  <img src="figs/png/results__mixture_grid__llama2-7b__alpha-curve-w4a4-s70.png" width="46%"
+       alt="Perplexity against the asymmetric weight alpha"/>
+  <img src="figs/png/results__mixture_grid__llama2-7b__ppl-vs-sparsity-w4a4.png" width="46%"
+       alt="Perplexity against sparsity for OBR, the pure asymmetric target and QDrift"/>
+  <br/>
+  <sub><em>Left: on LLaMA-2-7B at W4A4KV4 with 70% sparsity, a small asymmetric weight
+  (α = 0.25) wins, while the pure target (α = 1) is worse than OBR (α = 0). Right: across sparsity
+  levels, the selected mixture stays below OBR, while the pure target crosses above it.</em></sub>
+</p>
+
+<details>
+<summary><b>Full main table</b> (all 19 settings, three models)</summary>
+<br/>
+<p align="center">
+  <img src="tables/png/main_results.png" width="92%" alt="Main results table"/>
+</p>
+</details>
 
 The full tables are in [`tables/`](tables), and every number comes from
 [`visualize/`](#reproducing-the-paper).
