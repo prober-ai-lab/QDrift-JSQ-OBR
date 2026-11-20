@@ -67,7 +67,8 @@ def main() -> None:
     mem = [r[2] / 1e9 for r in rows]
     x = list(range(len(rows)))
 
-    fig, (axp, axm) = S.plt.subplots(1, 2, figsize=(7.0, 2.7))
+    # One paper column (3.25 in): the two panels stack, so the 8 pt text prints at ~8 pt.
+    fig, (axp, axm) = S.plt.subplots(2, 1, figsize=(3.3, 4.1))
 
     # Panel A: perplexity (degradation).
     cppl = ["#8a8f98", "#8a8f98", "#d98c5f", "#c0504d"]
@@ -75,7 +76,7 @@ def main() -> None:
     for xi, v in zip(x, ppl):
         axp.text(xi, v + 0.08, f"{v:.2f}", ha="center", va="bottom", fontsize=8)
     axp.axhline(ppl[0], ls="--", lw=0.9, color="#8a8f98", zorder=1)
-    axp.set_xticks(x, labels, fontsize=8)
+    axp.set_xticks(x, labels, fontsize=7)
     axp.set_ylabel("WikiText-2 perplexity")
     axp.set_ylim(0, max(ppl) * 1.18)
     axp.set_title("Quality degradation", fontsize=9)
@@ -86,7 +87,7 @@ def main() -> None:
     axm.bar(x, mem, color=cmem, width=0.64, zorder=3)
     for xi, v in zip(x, mem):
         axm.text(xi, v + 0.2, f"{v:.1f} GB", ha="center", va="bottom", fontsize=8)
-    axm.set_xticks(x, labels, fontsize=8)
+    axm.set_xticks(x, labels, fontsize=7)
     axm.set_ylabel("Weight memory (GB)")
     axm.set_ylim(0, max(mem) * 1.18)
     axm.set_title("Efficiency (memory)", fontsize=9)

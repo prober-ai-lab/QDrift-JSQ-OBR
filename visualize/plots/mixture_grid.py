@@ -10,11 +10,6 @@ Unlike the minitest figures, this script reads ``results/v2/`` run records
     test and validation, for one model and compression setting.  This is the
     single-minimum curve of the alpha-sweep ablation (Table 4) as a figure.
 
-``alpha-gamma-heatmap``
-    WikiText-2 (validation) perplexity over the two-dimensional mixture grid
-    alpha in rows, gamma in columns, with OBR at (0, 0).  Shows which target
-    dominates under a given sparsity and bit-width (Sec. 6, D1).
-
     python visualize/plots/mixture_grid.py --setting w4a4_s70 --model llama2-7b
 """
 
@@ -25,6 +20,7 @@ import json
 import re
 
 import style as S
+from matplotlib.ticker import FormatStrFormatter, NullFormatter
 
 RESULTS_V2 = S.ROOT / "results" / "v2"
 
@@ -162,6 +158,66 @@ def ppl_vs_sparsity(model: str, quant: str) -> None:
     S.panel_label(ax, f"{_pretty(quant)}, perplexity vs. sparsity")
     ax.legend(loc="upper left")
     S.save(fig, _name(model, "ppl-vs-sparsity", quant))
+
+
+PROFILE_MODELS = ("llama2-7b", "llama3.1-8b")
+PROFILE_SETTINGS = (
+    "w4a16_s50", "w4a16_s70", "w4a4_s50", "w4a4_s60", "w4a4_s70", "w2a16_s50",
+)
+PROFILE_COLOR = {"50": S.SERIES[0], "60": S.SERIES[2], "70": S.SERIES[1]}
+PROFILE_STYLE = {"w4a4": ("-", "o"), "w4a16": ("--", "s"), "w2a16": (":", "^")}
+
+
+def alpha_profiles() -> None:
+    """Validation perplexity relative to OBR against alpha at gamma = 0.
+
+    One panel per model, one curve per setting: colour is the sparsity, line
+    style the bit-width.  The filled marker is each curve's minimum.  Shows how
+    the best alpha and the range of alpha that beats OBR move with the setting
+    (Sec. 6).
+    """
+    fig, axes = S.plt.subplots(
+        1, len(PROFILE_MODELS), figsize=(6.9, 2.5), sharey=True, squeeze=False
+    )
+    handles = {}
+    for ax, model in zip(axes[0], PROFILE_MODELS):
+        for setting in PROFILE_SETTINGS:
+            line = sorted(
+                (p for p in load_points(model, setting) if p["gamma"] == 0.0),
+                key=lambda p: p["alpha"],
+            )
+            obr = next((p for p in line if p["alpha"] == 0.0), None)
+            if obr is None or len(line) < 3:
+                continue
+            quant, _, sparsity = setting.partition("_s")
+            style, marker = PROFILE_STYLE[quant]
+            color = PROFILE_COLOR[sparsity]
+            alphas = [p["alpha"] for p in line]
+            ratios = [p["val"] / obr["val"] for p in line]
+            (handle,) = ax.plot(
+                alphas, ratios, color=color, linestyle=style, marker=marker,
+                markersize=3, markerfacecolor="white",
+            )
+            best = min(range(len(line)), key=lambda i: ratios[i])
+            ax.plot(alphas[best], ratios[best], color=color, marker=marker,
+                    markersize=4.5, linestyle="none")
+            handles.setdefault(_pretty(setting), handle)
+        ax.axhline(1.0, color=S.INK_2, linewidth=0.8)
+        ax.set_yscale("log")
+        ax.set_yticks([0.3, 0.5, 0.7, 1.0, 1.5, 2.0])
+        ax.yaxis.set_major_formatter(FormatStrFormatter("%g"))
+        ax.yaxis.set_minor_formatter(NullFormatter())
+        ax.set_xlabel(r"asymmetric weight $\alpha$ ($\gamma=0$)")
+        S.panel_label(ax, MODEL_TITLE[model])
+    axes[0][0].set_ylabel("validation PPL / OBR")
+    fig.legend(
+        handles.values(), handles.keys(), loc="upper center",
+        bbox_to_anchor=(0.5, -0.04), ncol=3, frameon=False,
+    )
+    S.save(fig, "results__mixture_grid__all__alpha-profiles")
+
+
+MODEL_TITLE = {"llama2-7b": "LLaMA-2-7B", "llama3.1-8b": "LLaMA-3.1-8B"}
 
 
 def _pretty(setting: str) -> str:

@@ -11,8 +11,8 @@ can be rebuilt with one command (the table counterpart is
     python visualize/plots/paper_figures.py --only drift
 
 Figure -> paper:
-    regime (Fig. 1) · drift (Fig. 2) · pipeline (Fig. 3) · alpha_curve (Fig. 4)
-    · ppl_vs_sparsity (Fig. 5)
+    regime (Fig. 1) · drift (Figs. 2-4) · pipeline (Fig. 5) · alpha_curve (Fig. 6)
+    · ppl_vs_sparsity (Fig. 7) · alpha_profiles (Sec. 6)
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import regime_tradeoff as regime  # noqa: E402
 
 
 def build_drift() -> None:
-    """Figure 2: the three drift-accumulation panels (LLaMA-2-7B)."""
+    """Figures 2-4: the drift-accumulation figures (LLaMA-2-7B)."""
     argv = sys.argv
     sys.argv = ["paper_figures", "--model", "llama2-7b"]
     try:
@@ -43,14 +43,14 @@ def build_drift() -> None:
 
 
 def build_alpha_curve() -> None:
-    """Figure 4: the alpha-sweep U-curve at W4A4KV4 70% (LLaMA-2-7B)."""
+    """Figure 6: the alpha-sweep U-curve at W4A4KV4 70% (LLaMA-2-7B)."""
     points = grid.load_points("llama2-7b", "w4a4_s70")
     if points:
         grid.alpha_curve(points, "llama2-7b", "w4a4_s70")
 
 
 def build_ppl_vs_sparsity() -> None:
-    """Figure 5: perplexity against sparsity for W4A4 (LLaMA-2-7B)."""
+    """Figure 7: perplexity against sparsity for W4A4 (LLaMA-2-7B)."""
     grid.ppl_vs_sparsity("llama2-7b", "w4a4")
 
 
@@ -60,6 +60,7 @@ BUILDERS = {
     "pipeline": pipeline.main,
     "alpha_curve": build_alpha_curve,
     "ppl_vs_sparsity": build_ppl_vs_sparsity,
+    "alpha_profiles": grid.alpha_profiles,
 }
 
 

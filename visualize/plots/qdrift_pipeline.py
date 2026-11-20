@@ -1,6 +1,6 @@
 # Copyright (c) 2026 QDrift Authors. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Method overview (paper Fig. 3): how QDrift compresses one linear layer.
+"""Method overview (paper Fig. 5): how QDrift compresses one linear layer.
 
 Two forward passes give the clean input X and the drifted input X_hat; their
 statistics merge into the mixture pair (H_mix, T); the mask, OBR's two stages and
@@ -72,7 +72,7 @@ def main() -> None:
 
     # Row 2 (right to left): mask -> stage 1 -> stage 2 + GPTQ -> compressed layer.
     box(ax, 75, -3, 99, 12, "Mask  (Sec. 4.4)",
-        "scored on $T$:\nSparseGPT, or exact\npairwise 4:8 (Alg. 1)", NEW, NEW_FILL)
+        "SparseGPT score, or\nexact pairwise 4:8\non $T$ (Alg. 1)", NEW, NEW_FILL)
     box(ax, 50, -3, 70, 12, "OBR stage 1",
         "compensate pruning\non retained set\n(Eq. 7)", OBR, OBR_FILL)
     box(ax, 25, -3, 45, 12, "OBR stage 2",

@@ -14,14 +14,23 @@ Keys are ``/``-separated; ``<m>`` is a model id (``llama2-7b``, ``llama3.1-8b``,
     <m>/<s>/{obr,obr-val,qd,qd-val,pure,pure-val}     test / val perplexity (2 dp)
     <m>/<s>/{qd-delta,pure-delta}                     signed % vs OBR, test (1 dp)
     <m>/<s>/{qd-red}                                  |qd-delta| rounded to an integer
+    <m>/<s>/{qd-abs,pure-abs}                         |qd-delta|, |pure-delta| (1 dp)
+    <m>/qd-delta-{min,max}                            signed range of qd-delta over a model's rows
+    overfit/w4a4-s50/max-abs                          largest |pure-delta| at W4A4KV4 50%
     <m>/<s>/{alpha,gamma,mix}                         selected mixture
     <m>/<s>/seed/{obr-mean,obr-sd,qd-mean,qd-sd,delta,gap,gap-ratio}
+    seed/min-gap-ratio                                smallest gap / larger sd over the seed rows
     <m>/<s>/zs/<task>/{obr,qd,diff}                   zero-shot accuracy (1 dp), diff signed
-    <m>/<s>/zs/{wins,min-diff,max-diff,max-abs}       over the six tasks (avg excluded)
+    <m>/<s>/zs/{wins,min-diff,max-diff,max-abs,min-abs}  over the six tasks (avg excluded)
+    zs/<g>/{ppl-red-min,ppl-red-max,wins,pairs,max-abs-llama2}  per setting group <g>
+                                                      (w4a4-s50, w2a16-s50, 4to8 = 4:8p and 4:8m)
     <m>/<s>/zs/retain                                 best avg / FP16 avg, %
     <m>/fp16/zs/<task>                                FP16 dense reference
     <m>/<s>/time/{obr,qd,overhead}                    compression minutes, % overhead
     zs/{obr-avg-wins,settings}                        settings where OBR has the higher avg
+    zs/obr-avg-wins-lt1                               ... of which by less than one point
+    zs/chance                                         chance level of the six-task average
+    time/overhead-{min,max}                           range of the compression-time overhead
     loc/<row>/{ppl,ppl-val,delta}, loc/late-ratio     Table 2 (localization)
     sweep/a<alpha>/{ppl,ppl-val}                      Table 4 (gamma = 0)
     mask/{score,exact,qd,mask-gain,qd-delta}          Table 5
@@ -29,6 +38,10 @@ Keys are ``/``-separated; ``<m>`` is a model id (``llama2-7b``, ``llama3.1-8b``,
     llama2-7b/w4a4-s70/clean{,-val}                   pure clean target (0, 1)
     calib/<size>/<s>/obr                              OBR at other calibration sizes
     drift/<comp>/{ppl,first-above-1,rel-min,rel-max,ratio-min,ratio-max}, drift/dense/ppl
+    drift/<comp>/removed-{min,max}                    Fig. 4 right: % of inj.+inh. removed, blocks >= 4
+    drift/cancel/{min,max}                            Fig. 4 left: % linearly cancellable (OBR prefix),
+                                                      per-layer-type block means, blocks >= 8
+    grids/b<bits>/{best-ratio,best-s,below,above}     Appendix C: mid-rise / mid-tread joint error
     regime/{dense,sparse,quant,joint}, mem/{fp16,w4a4,ratio,fp16-peak,w4a4-peak,peak-ratio}
     gemm/{prefill,decode}-{min,max}
 
@@ -86,6 +99,7 @@ class Numbers:
 
 
 def main_numbers(n: Numbers, runs) -> None:
+    model_deltas, overfit_s50 = defaultdict(list), []
     for model, bits, pattern in P.MAIN_SPEC + [s for s in P.OVERFIT_SPEC if s not in P.MAIN_SPEC]:
         tags = runs.get((model, bits, pattern, P.CALIB))
         if not tags:
@@ -96,18 +110,27 @@ def main_numbers(n: Numbers, runs) -> None:
         if pure is not None:
             n.ppl(f"{base}/pure", pure)
             n[f"{base}/pure-delta"] = signed(T.delta_vs_obr(pure, obr))
+            n[f"{base}/pure-abs"] = f"{abs(T.delta_vs_obr(pure, obr)):.1f}"
+            if (bits, pattern) == ("W4A4", "s50"):
+                overfit_s50.append(abs(T.delta_vs_obr(pure, obr)))
         if (model, bits, pattern) not in P.MAIN_SPEC:
             continue
         n.ppl(f"{base}/qd", sel)
         delta = T.delta_vs_obr(sel, obr)
         n[f"{base}/qd-delta"] = signed(delta)
         n[f"{base}/qd-red"] = f"{abs(delta):.0f}"
+        n[f"{base}/qd-abs"] = f"{abs(delta):.1f}"
+        model_deltas[model].append(round(delta, 1))
         alpha, gamma = T.mix_of(sel["calibration"])
         n[f"{base}/alpha"], n[f"{base}/gamma"] = f"{alpha:g}", f"{gamma:g}"
         n[f"{base}/mix"] = f"$({alpha:g},{gamma:g})$"
+    for model, deltas in model_deltas.items():
+        n[f"{model}/qd-delta-min"], n[f"{model}/qd-delta-max"] = signed(min(deltas)), signed(max(deltas))
+    n["overfit/w4a4-s50/max-abs"] = f"{max(overfit_s50):.1f}"
 
 
 def seed_numbers(n: Numbers, runs) -> None:
+    ratios = []
     for model, bits, pattern in P.SEED_SPEC:
         tags = runs[(model, bits, pattern, P.CALIB)]
         _, _, sel = T.select(tags)
@@ -119,6 +142,8 @@ def seed_numbers(n: Numbers, runs) -> None:
         n[f"{base}/delta"] = signed(100 * (sm - om) / om)
         n[f"{base}/gap"] = f"{om - sm:.2f}"
         n[f"{base}/gap-ratio"] = f"{(om - sm) / max(osd, ssd):.1f}"
+        ratios.append((om - sm) / max(osd, ssd))
+    n["seed/min-gap-ratio"] = f"{min(ratios):.1f}"
 
 
 def zeroshot_numbers(n: Numbers, runs) -> None:
@@ -129,7 +154,8 @@ def zeroshot_numbers(n: Numbers, runs) -> None:
             fp16[model] = json.loads(path.read_text(encoding="utf-8"))["zeroshot"]
             for key in TASKS + ["avg"]:
                 n[f"{model}/fp16/zs/{key}"] = f"{fp16[model][key]:.1f}"
-    obr_wins = settings = 0
+    obr_wins = obr_wins_lt1 = settings = 0
+    group = defaultdict(lambda: {"red": [], "wins": 0, "pairs": 0, "abs-llama2": []})
     for model, bits, pattern in P.MAIN_SPEC:
         tags = runs.get((model, bits, pattern, P.CALIB))
         if not tags:
@@ -149,21 +175,45 @@ def zeroshot_numbers(n: Numbers, runs) -> None:
         n[f"{base}/wins"] = f"{sum(d > 0 for d in diffs)}"
         n[f"{base}/min-diff"], n[f"{base}/max-diff"] = signed(min(diffs)), signed(max(diffs))
         n[f"{base}/max-abs"] = f"{max(abs(d) for d in diffs):.1f}"
+        n[f"{base}/min-abs"] = f"{min(abs(d) for d in diffs):.1f}"
+        sid = setting_id(bits, pattern)
+        g = group["4to8" if "4to8" in sid else sid]
+        g["red"].append(abs(T.delta_vs_obr(sel, obr)))
+        g["wins"] += sum(d > 0 for d in diffs)
+        g["pairs"] += len(diffs)
+        if model.startswith("llama2"):
+            g["abs-llama2"] += [abs(d) for d in diffs]
         if model in fp16:
             best = max(round(float(oz["avg"]), 1), round(float(sz["avg"]), 1))
             n[f"{base}/retain"] = f"{100 * best / fp16[model]['avg']:.0f}"
         settings += 1
-        obr_wins += round(float(oz["avg"]), 1) > round(float(sz["avg"]), 1)
+        oa, sa = round(float(oz["avg"]), 1), round(float(sz["avg"]), 1)
+        obr_wins += oa > sa
+        obr_wins_lt1 += sa < oa < sa + 1.0
     n["zs/obr-avg-wins"], n["zs/settings"] = f"{obr_wins}", f"{settings}"
+    n["zs/obr-avg-wins-lt1"] = f"{obr_wins_lt1}"
+    for gid in ("w4a4-s50", "w2a16-s50", "4to8"):
+        g = group[gid]
+        n[f"zs/{gid}/ppl-red-min"] = f"{min(g['red']):.1f}"
+        n[f"zs/{gid}/ppl-red-max"] = f"{max(g['red']):.1f}"
+        n[f"zs/{gid}/wins"], n[f"zs/{gid}/pairs"] = f"{g['wins']}", f"{g['pairs']}"
+        n[f"zs/{gid}/max-abs-llama2"] = f"{max(g['abs-llama2']):.1f}"
+    # Chance level of each task (random guessing; LAMBADA is open-vocabulary, so 0).
+    chance = {"piqa": 50.0, "hellaswag": 25.0, "arc_easy": 25.0, "arc_challenge": 25.0,
+              "winogrande": 50.0, "lambada_openai": 0.0}
+    n["zs/chance"] = f"{sum(chance[t] for t in TASKS) / len(TASKS):.0f}"
 
 
 def time_numbers(n: Numbers, runs) -> None:
+    overheads = []
     for model, bits, pattern in P.COMPRESS_SPEC:
         obr, _, sel = T.select(runs[(model, bits, pattern, P.CALIB)])
         o, q = obr["compress_s"], sel["compress_s"]
         base = f"{model}/{setting_id(bits, pattern)}/time"
         n[f"{base}/obr"], n[f"{base}/qd"] = f"{o / 60:.0f}", f"{q / 60:.0f}"
         n[f"{base}/overhead"] = f"{100 * (q - o) / o:.0f}"
+        overheads.append(round(100 * (q - o) / o))
+    n["time/overhead-min"], n["time/overhead-max"] = f"{min(overheads)}", f"{max(overheads)}"
 
 
 def ablation_numbers(n: Numbers, runs) -> None:
@@ -214,7 +264,7 @@ def ablation_numbers(n: Numbers, runs) -> None:
 
 
 def drift_numbers(n: Numbers) -> None:
-    """Fig. 2 statistics, computed as the figure computes them (per-block means;
+    """Figs. 2 and 3 statistics, computed as the figures compute them (per-block means;
     inherited / injected is the ratio of the block means), over blocks >= 8."""
     record = json.loads(MINITEST.read_text(encoding="utf-8"))
     n["drift/dense/ppl"] = f"{math.exp(record['nll']['dense']):.2f}"
@@ -237,6 +287,47 @@ def drift_numbers(n: Numbers) -> None:
         n[f"drift/{comp}/rel-max"] = f"{max(mean[b] for b in deep):.2f}"
         n[f"drift/{comp}/ratio-min"] = f"{min(ratio[b] for b in deep):.0f}"
         n[f"drift/{comp}/ratio-max"] = f"{max(ratio[b] for b in deep):.0f}"
+        # Fig. 4 right, as cancel_figure: block mean of 1 - total / (injected + inherited).
+        removed = defaultdict(list)
+        for row in record["rows"]:
+            if row["comp"] == comp:
+                removed[row["block"]].append(1 - row["total"] / (row["injected"] + row["inherited"]))
+        share = [100 * sum(v) / len(v) for b, v in sorted(removed.items()) if b >= 4]
+        n[f"drift/{comp}/removed-min"] = f"{min(share):.1f}"
+        n[f"drift/{comp}/removed-max"] = f"{max(share):.1f}"
+    # Fig. 4 left, as cancel_figure: per layer type, block mean of the cancellable share on
+    # the OBR prefix.
+    cancel = defaultdict(list)
+    for row in record["rows"]:
+        if row["comp"] == "obr" and row["block"] >= 8 and not math.isnan(row["cancel"]):
+            cancel[(row["type"], row["block"])].append(row["cancel"])
+    means = [100 * sum(v) / len(v) for v in cancel.values()]
+    n["drift/cancel/min"], n["drift/cancel/max"] = f"{min(means):.0f}", f"{max(means):.0f}"
+
+
+GRID_MINITEST = sorted((T.ROOT / "results" / "minitests").glob("grid_sparsity_crossover__*.json"))
+
+
+def grid_numbers(n: Numbers) -> None:
+    """Appendix C: ratio of the OBR-compensated joint layer error of the mid-rise grid to
+    that of the mid-tread grid, summed over the measured layers, per bit width and sparsity."""
+    record = json.loads(GRID_MINITEST[0].read_text(encoding="utf-8"))
+    errors = defaultdict(float)
+    for row in record["errors"]:
+        if row.get("joint_err_obr") is not None:
+            errors[(row["grid"], row["bits"], row["sparsity"])] += row["joint_err_obr"]
+    for bits in sorted({b for _, b, _ in errors}):
+        sparsities = sorted({s for g, b, s in errors if b == bits and g == "midrise"})
+        ratio = {s: errors[("midrise", bits, s)] / errors[("midtread", bits, s)] for s in sparsities}
+        best = min(ratio, key=ratio.get)
+        n[f"grids/b{bits}/best-ratio"] = f"{ratio[best]:.2f}"
+        n[f"grids/b{bits}/best-s"] = f"{100 * best:.0f}"
+        above = [s for s in sparsities if ratio[s] >= 1.0]
+        if above:
+            first = above[0]
+            below = [s for s in sparsities if s < first]
+            n[f"grids/b{bits}/above"] = f"{100 * first:.0f}"
+            n[f"grids/b{bits}/below"] = f"{100 * below[-1]:.0f}" if below else "none"
 
 
 def efficiency_numbers(n: Numbers) -> None:
@@ -262,6 +353,7 @@ def collect() -> Numbers:
     time_numbers(n, runs)
     ablation_numbers(n, runs)
     drift_numbers(n)
+    grid_numbers(n)
     efficiency_numbers(n)
     return n
 

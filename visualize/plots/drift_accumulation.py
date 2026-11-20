@@ -2,16 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Figures for the drift-accumulation minitest.
 
-``input-drift-vs-depth``
+``input-drift-vs-depth`` (paper Fig. 2)
     Relative input drift ||dX|| / ||X|| at each block (attention input), one
     curve per compensation mode; the legend carries the end-to-end PPL.
 
-``error-split-vs-depth``
+``error-split-vs-depth`` (paper Fig. 3)
     Per compensation mode, the inherited drift E||W dx||^2, the injected error
     E||dW x_hat||^2, and the total asymmetric error E||W_hat x_hat - W x||^2,
     each normalized by E||W x||^2 and averaged over the block's layers.
 
-``cancellable-drift-vs-depth``
+``cancellable-drift-vs-depth`` (paper Fig. 4)
     Share of the inherited drift a free dense update of W could cancel, per
     layer type (OBR run), and the share actually removed by each mode,
     1 - total / (injected + inherited).
@@ -30,7 +30,7 @@ from matplotlib.ticker import MaxNLocator
 
 STEM = "drift_accumulation"
 KEYS = ("comp", "layer")
-# The run the paper reports (Fig. 2, Appendix E): W2A16 g128, 50% SparseGPT, GPTQ,
+# The run the paper reports (Figs. 2-4, Appendix E): W2A16 g128, 50% SparseGPT, GPTQ,
 # 128x1024 calibration, evaluated on 16 WikiText-2 test sequences of 2048 tokens.
 # Older runs with other recipes share the stem, and merging them would mix recipes,
 # so this one is the default input.
@@ -92,7 +92,8 @@ def split_figure(rows: list[dict], model: str) -> None:
         ("total", r"total $\|\hat W\hat x-Wx\|^2$", S.INK),
     )
     fig, axes = S.plt.subplots(
-        1, len(comps), figsize=(2.5 * len(comps) + 0.8, 2.3), squeeze=False, sharey=True
+        # ~6.9 in with the outside legend: one paper text width (6.75 in) at scale ~1.
+        1, len(comps), figsize=(1.95 * len(comps) + 0.8, 2.3), squeeze=False, sharey=True
     )
     for ax, comp in zip(axes[0], comps):
         for key, label, color in parts:
@@ -104,6 +105,8 @@ def split_figure(rows: list[dict], model: str) -> None:
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
         S.panel_label(ax, S.COMP_LABEL[comp])
     axes[0][0].set_ylabel(r"error / $\|Wx\|^2$ (block mean)")
+    ymin, ymax = axes[0][0].get_ylim()
+    axes[0][0].set_ylim(ymin, ymax * 2)  # headroom so the top curves clear the top edge
     axes[0][-1].legend(loc="upper left", bbox_to_anchor=(1.0, 1.0))
     S.save(fig, S.figure_name(STEM, model, "error-split-vs-depth"))
 
