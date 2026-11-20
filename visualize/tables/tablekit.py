@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared loading and LaTeX/PDF saving for the paper tables.
 
-Every table is written twice under one name: ``tables/<name>.tex`` -- a booktabs
+Every table is written twice under one name: ``tables/tex/<name>.tex`` -- a booktabs
 ``tabular`` fragment that the paper ``\\input``s inside its own ``table`` float --
 and ``tables/pdf/<name>.pdf`` -- the same fragment compiled standalone with
 ``pdflatex`` for preview and direct inclusion.  This mirrors the figure pipeline
@@ -181,13 +181,14 @@ def tabular(colspec: str, header: str, rows: list[str], groups: list[str] | None
 def save_table(name: str, body: str) -> None:
     """Write the table three ways, like the figure pipeline plus the LaTeX source.
 
-    ``tables/<name>.tex``   -- booktabs fragment the paper ``\\input``s;
+    ``tables/tex/<name>.tex`` -- booktabs fragment the paper ``\\input``s;
     ``tables/pdf/<name>.pdf`` -- standalone compile (vector, for inclusion);
     ``tables/<name>.png``   -- 300 dpi raster of that PDF, for preview.
     """
     TABLES.mkdir(parents=True, exist_ok=True)
     (TABLES / "pdf").mkdir(parents=True, exist_ok=True)
-    tex = TABLES / f"{name}.tex"
+    (TABLES / "tex").mkdir(parents=True, exist_ok=True)
+    tex = TABLES / "tex" / f"{name}.tex"
     tex.write_text(body.rstrip() + "\n", encoding="utf-8")
     pdf = TABLES / "pdf" / f"{name}.pdf"
     png = TABLES / f"{name}.png"

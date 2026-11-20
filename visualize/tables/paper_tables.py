@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Generate every paper table as a booktabs ``.tex`` fragment and a compiled PDF.
 
-Each table is written to ``tables/<name>.tex`` (``\\input`` it in the paper) and
+Each table is written to ``tables/tex/<name>.tex`` (``\\input`` it in the paper) and
 ``tables/pdf/<name>.pdf`` (standalone, for preview or direct inclusion).  Data
 tables are pulled live from ``results/v2`` so they track the campaign; the
 measured-constant tables (the pre-campaign localization study and the GEMM
