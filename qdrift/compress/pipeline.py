@@ -83,9 +83,15 @@ _STREAM_HESSIAN_ELEMENTS = 1 << 27
 _HESSIAN_STREAM_ROWS = 4096
 
 
-def _mix(recipe: CompressionRecipe) -> tuple[float, float]:
-    """QDrift's mixture weights ``(alpha, gamma)``; only read under ``drift``."""
-    return recipe.compensation.mix_asym, recipe.compensation.mix_clean
+def _mix(recipe: CompressionRecipe, names: str | list[str] | None) -> tuple[float, float]:
+    """QDrift's mixture weights ``(alpha, gamma)`` for a layer, or for a group
+    of layers sharing one input; only read under ``drift``."""
+    if names is None or isinstance(names, str):
+        return recipe.compensation.mix_for(names)
+    mixes = {recipe.compensation.mix_for(name) for name in names}
+    if len(mixes) != 1:
+        raise ValueError(f"layers sharing one input get different mixtures: {names}")
+    return mixes.pop()
 
 
 def _dual_path(recipe: CompressionRecipe) -> bool:
@@ -337,7 +343,7 @@ def _quantize_layer(
     if recipe.compensation.method != "none":
         if hessian_system is None or hessian_raw is None:
             raise ValueError("compensation requires calibration inputs")
-        if _dual_path(recipe) and recipe.compensation.mix_asym > 0.0 and hessian_diff is None:
+        if _dual_path(recipe) and _mix(recipe, name)[0] > 0.0 and hessian_diff is None:
             raise ValueError("QDrift requires dual-path calibration inputs")
         # Under QDrift, hessian_system is the mixture's system and
         # hessian_diff its weighted drift matrix (qdrift.obr.drift).
@@ -518,7 +524,7 @@ def _process_full_layer(
                 compressed_input,
                 recipe.compensation.damping,
                 device,
-                _mix(recipe),
+                _mix(recipe, name),
             )
             hessian_raw = hessian_system
         else:
@@ -536,7 +542,7 @@ def _process_full_layer(
                 local_fp,
                 local_hat,
                 recipe.compensation.damping,
-                _mix(recipe),
+                _mix(recipe, name),
             )
             hessian_raw = hessian_system
     else:
@@ -863,7 +869,7 @@ def compress(
                     compressed_input,
                     recipe.compensation.damping,
                     main_device,
-                    _mix(recipe),
+                    _mix(recipe, names),
                 )
                 hessian_raw = hessian_system
             else:
@@ -1002,7 +1008,7 @@ def compress(
                     compressed_input,
                     recipe.compensation.damping,
                     main_device,
-                    _mix(recipe),
+                    _mix(recipe, name),
                 )
                 hessian_raw = hessian_system
             else:

@@ -143,3 +143,59 @@ def test_variant_recipes_validate_with_a_mixture() -> None:
     assert variants["dense"].compensation.method == "none"
     assert variants["sparse"].compensation.method == "obr"
     assert variants["joint"].compensation.mix_asym == 0.25
+
+
+def test_localized_mixture_scope() -> None:
+    """``mix_blocks`` / ``mix_modules`` give the mixture inside the scope and
+    OBR's (0, 0) outside; the defaults are the global mixture."""
+    attn, gate, down = "model.layers.{}.self_attn.q_proj", "model.layers.{}.mlp.gate_proj", "model.layers.{}.mlp.down_proj"
+    full = CompensationSpec(method="drift")
+    assert full.is_global_mix() and full.mix_for(None) == (1.0, 0.0)
+    early = CompensationSpec(method="drift", mix_blocks=(0, 7))
+    assert early.mix_for(attn.format(7)) == (1.0, 0.0)
+    assert early.mix_for(attn.format(8)) == (0.0, 0.0)
+    assert early.mix_for(down.format(31)) == (0.0, 0.0)
+    mlp_in = CompensationSpec(method="drift", mix_asym=0.25, mix_modules="mlp_in")
+    assert mlp_in.mix_for(gate.format(3)) == (0.25, 0.0)
+    assert mlp_in.mix_for(gate.format(3).replace("gate", "up")) == (0.25, 0.0)
+    assert mlp_in.mix_for(down.format(3)) == (0.0, 0.0)
+    assert mlp_in.mix_for(attn.format(3)) == (0.0, 0.0)
+    attn_only = CompensationSpec(method="drift", mix_modules="attn")
+    assert attn_only.mix_for("model.layers.0.self_attn.o_proj") == (1.0, 0.0)
+    assert attn_only.mix_for(down.format(0)) == (0.0, 0.0)
+    for comp, tag in (
+        (early, "_qdrift-L0-7_seed42"),
+        (CompensationSpec(method="drift", mix_modules="attn"), "_qdrift-Mattn_seed42"),
+        (CompensationSpec(method="drift", mix_asym=0.25, mix_blocks=(8, 31)), "_qdrift-a0.25c0-L8-31_seed42"),
+    ):
+        recipe = CompressionRecipe(compensation=comp)
+        recipe.validate()
+        assert run_name(recipe).endswith(tag)
+        assert CompensationSpec.from_dict(comp.to_dict()) == comp
+    assert "mix_blocks" not in full.to_dict() and "mix_modules" not in full.to_dict()
+    for bad in (
+        CompensationSpec(method="obr", mix_blocks=(0, 3)),
+        CompensationSpec(method="drift", mix_blocks=(5, 2)),
+        CompensationSpec(method="drift", mix_modules="mlp"),
+    ):
+        with pytest.raises(ValueError):
+            bad.validate()
+    # Layers sharing one input must share one mixture.
+    recipe = CompressionRecipe(compensation=mlp_in)
+    assert P._mix(recipe, [gate.format(1), gate.format(1).replace("gate", "up")]) == (0.25, 0.0)
+    with pytest.raises(ValueError):
+        P._mix(recipe, [gate.format(1), down.format(1)])
+
+
+def test_localized_mixture_layers(monkeypatch) -> None:
+    """In scope the layer equals the global mixture's, out of scope OBR's."""
+    monkeypatch.setattr(P.torch.cuda, "set_device", lambda device: None)
+    x, z = _inputs(rows=256, cols=64, seed=5)
+    weight = torch.randn(16, 64, generator=torch.Generator().manual_seed(7))
+    qparams = qrange(4, "midtread")
+    inside, outside = "model.layers.2.mlp.down_proj", "model.layers.9.mlp.down_proj"
+    obr = P._process_full_layer(_layer_recipe(CompensationSpec(method="obr")), qparams, outside, weight, z, None, "cpu", True)
+    glob = P._process_full_layer(_layer_recipe(CompensationSpec(method="drift")), qparams, inside, weight, x, z, "cpu", True)
+    local = _layer_recipe(CompensationSpec(method="drift", mix_blocks=(0, 3)))
+    assert torch.equal(P._process_full_layer(local, qparams, inside, weight, x, z, "cpu", True).new_weight, glob.new_weight)
+    assert torch.equal(P._process_full_layer(local, qparams, outside, weight, x, z, "cpu", True).new_weight, obr.new_weight)

@@ -308,6 +308,16 @@ class RotationSpec:
         )
 
 
+# Localized mixture (``CompensationSpec.mix_modules``): module key -> name parts.
+MIX_MODULES = {
+    "all": (),
+    "attn": ("self_attn.",),
+    "mlp_in": ("mlp.gate_proj", "mlp.up_proj"),
+    "mlp_out": ("mlp.down_proj",),
+}
+_BLOCK_RE = re.compile(r"layers\.(\d+)\.")
+
+
 @dataclass(frozen=True)
 class CompensationSpec:
     """Calibration objective of the compensation.
@@ -324,6 +334,11 @@ class CompensationSpec:
     (docs/qdrift.md).  ``alpha = 1, gamma = 0`` is the pure asymmetric target and
     ``alpha = gamma = 0`` is OBR.  ``alpha`` (no relation to ``mix_asym``) is
     OBR's early/late column split.
+
+    ``mix_blocks`` (inclusive decoder-block range) and ``mix_modules``
+    (``attn`` = q/k/v/o, ``mlp_in`` = gate/up, ``mlp_out`` = down) restrict the
+    mixture to a subset of layers; every other layer gets ``(0, 0)``, i.e. OBR.
+    This is the localization ablation; the defaults apply it everywhere.
     """
 
     method: str = "obr"
@@ -331,6 +346,8 @@ class CompensationSpec:
     damping: float = 0.01
     mix_asym: float = 1.0
     mix_clean: float = 0.0
+    mix_blocks: tuple[int, int] | None = None
+    mix_modules: str = "all"
 
     def validate(self) -> None:
         if self.method not in ("none", "obr", "drift"):
@@ -343,16 +360,53 @@ class CompensationSpec:
             raise ValueError("mixture weights need mix_asym, mix_clean >= 0 and mix_asym + mix_clean <= 1")
         if self.method != "drift" and not self.is_default_mix():
             raise ValueError("mixture weights need --comp drift")
+        if self.mix_modules not in MIX_MODULES:
+            raise ValueError(f"mix_modules must be one of {sorted(MIX_MODULES)}")
+        if self.mix_blocks is not None and not 0 <= self.mix_blocks[0] <= self.mix_blocks[1]:
+            raise ValueError("mix_blocks needs 0 <= first <= last")
+        if self.method != "drift" and not self.is_global_mix():
+            raise ValueError("mix_blocks / mix_modules need --comp drift")
 
     def is_default_mix(self) -> bool:
         """The default weights (``alpha = 1, gamma = 0``)."""
         return self.mix_asym == 1.0 and self.mix_clean == 0.0
 
+    def is_global_mix(self) -> bool:
+        """The mixture applies to every layer (no localization)."""
+        return self.mix_blocks is None and self.mix_modules == "all"
+
+    def mix_for(self, name: str | None) -> tuple[float, float]:
+        """``(alpha, gamma)`` of layer ``name``: the mixture inside the scope,
+        OBR's ``(0, 0)`` outside it."""
+        mix = (self.mix_asym, self.mix_clean)
+        if self.is_global_mix():
+            return mix
+        if name is None:
+            raise ValueError("a localized mixture needs the layer name")
+        if self.mix_blocks is not None:
+            match = _BLOCK_RE.search(name)
+            if match is None:
+                raise ValueError(f"no decoder block index in layer name {name}")
+            block = int(match.group(1))
+            if not self.mix_blocks[0] <= block <= self.mix_blocks[1]:
+                return (0.0, 0.0)
+        if self.mix_modules != "all" and not any(
+            key in name for key in MIX_MODULES[self.mix_modules]
+        ):
+            return (0.0, 0.0)
+        return mix
+
     def mix_tag(self) -> str:
-        """``-a{alpha}c{gamma}`` for non-default mixture weights, else empty."""
-        if self.method != "drift" or self.is_default_mix():
+        """``-a{alpha}c{gamma}`` for non-default mixture weights, then
+        ``-L{first}-{last}`` / ``-M{modules}`` for a localized mixture."""
+        if self.method != "drift":
             return ""
-        return f"-a{self.mix_asym:g}c{self.mix_clean:g}"
+        tag = "" if self.is_default_mix() else f"-a{self.mix_asym:g}c{self.mix_clean:g}"
+        if self.mix_blocks is not None:
+            tag += f"-L{self.mix_blocks[0]}-{self.mix_blocks[1]}"
+        if self.mix_modules != "all":
+            tag += f"-M{self.mix_modules}"
+        return tag
 
     def mechanism_tag(self) -> str:
         """The solver every objective runs on (kept in run and checkpoint names)."""
@@ -369,6 +423,10 @@ class CompensationSpec:
         if not self.is_default_mix():
             data["mix_asym"] = self.mix_asym
             data["mix_clean"] = self.mix_clean
+        if self.mix_blocks is not None:
+            data["mix_blocks"] = list(self.mix_blocks)
+        if self.mix_modules != "all":
+            data["mix_modules"] = self.mix_modules
         return data
 
     @classmethod
@@ -379,6 +437,12 @@ class CompensationSpec:
             damping=float(data.get("damping", 0.01)),
             mix_asym=float(data.get("mix_asym", 1.0)),
             mix_clean=float(data.get("mix_clean", 0.0)),
+            mix_blocks=(
+                tuple(int(b) for b in data["mix_blocks"])
+                if data.get("mix_blocks") is not None
+                else None
+            ),
+            mix_modules=str(data.get("mix_modules", "all")),
         )
 
 
@@ -598,7 +662,8 @@ def fp16_recipe(
         kv_cache=replace(recipe.kv_cache, k_bits=16, v_bits=16),
         prune=replace(recipe.prune, sparsity=sparsity, structure=structure),
         compensation=replace(
-            recipe.compensation, method="none", mix_asym=1.0, mix_clean=0.0
+            recipe.compensation, method="none", mix_asym=1.0, mix_clean=0.0,
+            mix_blocks=None, mix_modules="all"
         ),
         pairwise_fraction=0.0,
         pairwise_layers=(),
@@ -624,7 +689,8 @@ def sparse_recipe(recipe: CompressionRecipe) -> CompressionRecipe:
     return replace(
         sparse,
         compensation=replace(
-            recipe.compensation, method="obr", mix_asym=1.0, mix_clean=0.0
+            recipe.compensation, method="obr", mix_asym=1.0, mix_clean=0.0,
+            mix_blocks=None, mix_modules="all"
         ),
     )
 
