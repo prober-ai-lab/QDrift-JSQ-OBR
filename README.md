@@ -2,6 +2,10 @@
 
 QDrift compresses decoder-only LLMs with **pruning + quantization + compensation**
 and writes both the compressed checkpoints and a unified benchmark result file.
+Its compensation objective is a constrained mixture of three reconstruction targets
+on OBR's closed-form solver: `alpha` weights the asymmetric target
+`E||W_hat X_hat - W X||^2`, `gamma` the clean-input target, and OBR's symmetric
+target gets `1 - alpha - gamma`; `(0, 0)` is OBR.
 
 Supported axes:
 
@@ -24,7 +28,7 @@ Terminology:
 - grid: mid-rise / mid-tread (`--grid`; `--a-grid` / `--kv-grid` override activations and KV)
 - range: full / clip-search
 - weight quantizer: RTN / GPTQ
-- compensation: none / OBR / drift-OBR
+- compensation: none / OBR / QDrift mixture (`--comp drift --mix-asym ALPHA --mix-clean GAMMA`)
 - rotation: fast Hadamard / none
 
 Default recipe follows OBR's setup: GPTQ, W4A4KV4, mid-tread, range-clip
@@ -68,7 +72,7 @@ scripts/compress.sh
 # Unified benchmark: four-regime accuracy + prefill/decode efficiency.
 scripts/benchmark.sh --tasks all
 
-# Headline QDrift recipe (llama2-7b, W2A16 mid-rise): compress + PPL.
+# Headline paper row (llama2-7b, W4A4KV4, 70% unstructured): OBR and QDrift.
 scripts/reproduce.sh
 
 # Hardware-sparse joint checkpoint only (CUTLASS INT4 sparse).
@@ -131,11 +135,25 @@ The unified benchmark loads each of the four real checkpoints once and reports:
 - `efficiency`: real-kernel prefill/decode latency, throughput, load time,
   peak memory, checkpoint size and compression ratio
 
-## Documentation
+## Paper results
 
-- [Compression](docs/compression.md)
-- [Benchmark](docs/benchmark.md)
-- [Architecture](docs/architecture.md)
+The paper's runs use `python -m main run`, which compresses one joint checkpoint,
+evaluates WikiText-2 test and validation perplexity (and zero-shot with
+`--zeroshot`), and writes `results/v2/<run name>.json`.  The protocol is SparseGPT
+masks, GPTQ late half, `128x1024` WikiText-2 calibration, and one global
+`(alpha, gamma)` per setting, selected on validation perplexity from a grid that
+contains OBR.  `scripts/reproduce.sh` runs the headline row.
+
+Everything the paper shows is generated from the result records:
+
+```bash
+python visualize/tables/paper_tables.py    # tables/tex/*.tex, tables/pdf/*.pdf, tables/*.png
+python visualize/tables/paper_numbers.py   # tables/tex/numbers.tex: \qd{<key>} for every number in the text
+python visualize/plots/paper_figures.py    # figs/*.png, figs/pdf/*.pdf
+```
+
+`figs/` and `tables/` are committed; rebuilding unchanged inputs reproduces them
+byte for byte.
 
 
 ## Standalone sparse/quant inference benchmark
@@ -174,5 +192,4 @@ checkpoints for the W4A4/joint-sparse-W4A4 path.  KV precision comes from the
 checkpoint recipe (`--kv-bits`); the inference engine falls back to
 KV16 if they differ.  The default
 `--e2e-regimes dense,sparse,quant,joint` evaluates every effective path, including the FP16 sparse baseline.  The engine
-requires `--rotation none`; rotated checkpoints use `--engine hf`.  Reference
-results: `results/inference/REPORT.md`.
+requires `--rotation none`; rotated checkpoints use `--engine hf`.

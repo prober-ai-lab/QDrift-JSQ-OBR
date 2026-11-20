@@ -9,13 +9,14 @@ and ``tables/pdf/<name>.pdf`` -- the same fragment compiled standalone with
 in ``visualize/plots/style.py`` (``figs/<name>.png`` + ``figs/pdf/<name>.pdf``).
 
 Numbers are pulled live from the v2 result records so a table never drifts from
-the campaign.  The ``vs OBR`` delta is computed on the WikiText-2 *validation*
-perplexity, consistent with how the mixture is selected.
+the campaign.  The mixture is selected on WikiText-2 *validation* perplexity; the
+``vs OBR`` delta is computed on the reported *test* perplexity.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import statistics
@@ -144,10 +145,10 @@ def delta_vs_obr(record: dict, obr: dict) -> float:
 
 
 def qdrift_cell(record: dict, obr: dict) -> str:
-    """Bold ``test (val)`` with the validation-relative delta as a subscript.
+    """Bold ``test (val)`` with the test-relative delta as a subscript.
 
     The delta is written in parentheses so it reads ``7.37 (7.47)`` with a
-    small ``(-5.0%)`` subscript, and never looks detached from the number.
+    small ``(-4.8%)`` subscript, and never looks detached from the number.
     """
     return r"\textbf{%s}$_{(%+.1f\%%)}$" % (ppl_cell(record), delta_vs_obr(record, obr))
 
@@ -201,6 +202,8 @@ def save_table(name: str, body: str) -> None:
             cwd=tmp,
             capture_output=True,
             text=True,
+            # Fixed dates and IDs, so an unchanged table rebuilds to identical bytes.
+            env={**os.environ, "SOURCE_DATE_EPOCH": "0", "FORCE_SOURCE_DATE": "1"},
         )
         built = tmp / f"{name}.pdf"
         if not built.exists():

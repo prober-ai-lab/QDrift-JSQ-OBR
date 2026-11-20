@@ -185,7 +185,6 @@ def _quantize_marlin(
     sparse: bool,
 ) -> tuple[torch.Tensor, torch.Tensor, int, int]:
     out_features, in_features = weight.shape
-    group = in_features if group_size is None else group_size
     if group_size is not None and group_size < in_features:
         if in_features % group_size:
             raise ValueError("group_size must divide the input width")

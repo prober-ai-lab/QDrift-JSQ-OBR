@@ -11,7 +11,8 @@ can be rebuilt with one command (the table counterpart is
     python visualize/plots/paper_figures.py --only drift
 
 Figure -> paper:
-    drift (Fig. 1) · alpha_curve (Fig. 3) · ppl_vs_sparsity (Fig. 4)
+    regime (Fig. 1) · drift (Fig. 2) · pipeline (Fig. 3) · alpha_curve (Fig. 4)
+    · ppl_vs_sparsity (Fig. 5)
 """
 
 from __future__ import annotations
@@ -25,16 +26,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import style as S  # noqa: E402
 import drift_accumulation as drift  # noqa: E402
 import mixture_grid as grid  # noqa: E402
-
-# The (alpha, gamma) grids that drive the alpha-sweep curves (Fig. 3); the paper
-# shows LLaMA-2-7B, with cross-model generalization carried by the main table.
-GRID_SETTINGS = [
-    ("llama2-7b", "w4a4_s50"), ("llama2-7b", "w4a4_s70"),
-]
+import qdrift_pipeline as pipeline  # noqa: E402
+import regime_tradeoff as regime  # noqa: E402
 
 
 def build_drift() -> None:
-    """Figure 1: the three drift-accumulation panels (LLaMA-2-7B)."""
+    """Figure 2: the three drift-accumulation panels (LLaMA-2-7B)."""
     argv = sys.argv
     sys.argv = ["paper_figures", "--model", "llama2-7b"]
     try:
@@ -46,20 +43,21 @@ def build_drift() -> None:
 
 
 def build_alpha_curve() -> None:
-    """Figure 3: the alpha-sweep U-curve, every complete gamma=0 line."""
-    for model, setting in GRID_SETTINGS:
-        points = grid.load_points(model, setting)
-        if points:
-            grid.alpha_curve(points, model, setting)
+    """Figure 4: the alpha-sweep U-curve at W4A4KV4 70% (LLaMA-2-7B)."""
+    points = grid.load_points("llama2-7b", "w4a4_s70")
+    if points:
+        grid.alpha_curve(points, "llama2-7b", "w4a4_s70")
 
 
 def build_ppl_vs_sparsity() -> None:
-    """Figure 4: perplexity against sparsity for W4A4 (LLaMA-2-7B)."""
+    """Figure 5: perplexity against sparsity for W4A4 (LLaMA-2-7B)."""
     grid.ppl_vs_sparsity("llama2-7b", "w4a4")
 
 
 BUILDERS = {
+    "regime": regime.main,
     "drift": build_drift,
+    "pipeline": pipeline.main,
     "alpha_curve": build_alpha_curve,
     "ppl_vs_sparsity": build_ppl_vs_sparsity,
 }

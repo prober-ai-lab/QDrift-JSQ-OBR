@@ -24,7 +24,6 @@ import argparse
 import json
 import re
 
-import numpy as np
 import style as S
 
 RESULTS_V2 = S.ROOT / "results" / "v2"

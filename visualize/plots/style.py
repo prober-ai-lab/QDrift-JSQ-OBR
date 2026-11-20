@@ -148,7 +148,7 @@ def save(fig: plt.Figure, name: str) -> None:
     png = FIGS / f"{name}.png"
     pdf = FIGS / "pdf" / f"{name}.pdf"
     fig.savefig(png, dpi=300, bbox_inches="tight")
-    fig.savefig(pdf, bbox_inches="tight")
+    fig.savefig(pdf, bbox_inches="tight", metadata={"CreationDate": None})  # reproducible bytes
     plt.close(fig)
     print(f"wrote {png.relative_to(ROOT)} and {pdf.relative_to(ROOT)}")
 

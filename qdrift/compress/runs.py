@@ -34,7 +34,8 @@ RESULTS_V2 = ROOT / "results" / "v2"
 
 # compensation.method -> calibration tag
 CALIBRATION_TAGS = {"drift": "qdrift", "obr": "seq", "none": "nocomp"}
-# The paper's calibration size (samples, tokens each); other sizes are named.
+# The calibration size left out of run names (samples, tokens each), from the first
+# campaign; every other size, including the paper's 128x1024, is named (c128x1024).
 CALIBRATION_SIZE = (32, 1024)
 
 

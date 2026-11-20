@@ -25,7 +25,7 @@ void matmul_host(
             cutlass::layout::RowMajor,       // LayoutOutput
             int32_t,                         // ElementAccumulator
             cutlass::arch::OpClassTensorOp,  // tag indicating Tensor Cores
-            cutlass::arch::Sm80  // tag indicating target GPU compute architecture  // TODO: This is just for compiling on my laptop temporarily. Should be higher when doing benchmarking.
+            cutlass::arch::Sm80  // tag indicating target GPU compute architecture
     >;
 
     Gemm gemmOp;
