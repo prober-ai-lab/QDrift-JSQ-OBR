@@ -5,8 +5,7 @@
 Each table is written to ``tables/tex/<name>.tex`` (``\\input`` it in the paper) and
 ``tables/pdf/<name>.pdf`` (standalone, for preview or direct inclusion).  Data
 tables are pulled live from ``results/v2`` so they track the campaign; the
-measured-constant tables (the pre-campaign localization study and the GEMM
-microbenchmark) carry their numbers inline.
+measured-constant table (the GEMM microbenchmark) carries its numbers inline.
 
     python visualize/tables/paper_tables.py            # build all
     python visualize/tables/paper_tables.py --only main_results seed_robustness
@@ -21,6 +20,7 @@ Name -> paper table:
 from __future__ import annotations
 
 import argparse
+import json
 
 import tablekit as T
 
@@ -288,16 +288,38 @@ def asymmetric_overfit(runs) -> tuple[str, str]:
     return "asymmetric_overfit", _render("lllccc", header, blocks)
 
 
+LOCALIZATION_BASE = "llama2-7b_obr_w4a4_s70_c128x1024"
+LOCALIZATION_ROWS = [
+    ("none (OBR)", "seq"), ("blocks 0--3", "qdrift-L0-3"), ("blocks 0--7", "qdrift-L0-7"),
+    ("blocks 0--11", "qdrift-L0-11"), ("blocks 0--15", "qdrift-L0-15"),
+    ("blocks 8--31", "qdrift-L8-31"), ("attention only", "qdrift-Mattn"),
+    ("MLP gate/up only", "qdrift-Mmlp_in"), ("MLP down\\_proj only", "qdrift-Mmlp_out"),
+    ("all blocks", "qdrift"),
+]
+
+
 def localization(_runs) -> tuple[str, str]:
-    """Table 2 -- asymmetric target on a block prefix only (pre-campaign)."""
-    rows = [
-        r"none (OBR) & 38.38 & 39.88", r"blocks 0--3 & 31.71 & 31.38",
-        r"blocks 0--7 & 32.43 & 31.16", r"blocks 0--11 & 32.91 & 30.93",
-        r"blocks 0--15 & 34.96 & 32.54", r"blocks 8--31 & 94.32 & 89.12",
-        r"attention only & 42.58 & 39.47", r"MLP gate/up only & 4227.7 & 4076.3",
-        r"MLP down\_proj only & 515.7 & 496.7", r"all blocks & 52.96 & 47.67",
-    ]
-    header = r"Layers with asymmetric target & Test & Val"
+    """Table 2 -- the pure asymmetric target (1, 0) on a subset of layers only,
+    OBR elsewhere (7B W4A4KV4 s70, 128x1024).  The localized runs are read by
+    name; they are off the selection grid, so ``load_runs`` drops them."""
+    records = {}
+    for label, tag in LOCALIZATION_ROWS:
+        path = T.RESULTS_V2 / f"{LOCALIZATION_BASE}_{tag}_seed42.json"
+        record = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+        if record is None or "wikitext2" not in (record.get("ppl") or {}):
+            print(f"  skip localization row {label}: no result")
+            continue
+        records[label] = record
+    obr = records.get("none (OBR)")
+    if obr is None or len(records) < 3:
+        raise SystemExit("localization: the localized runs have not landed yet")
+    rows = []
+    for label, _ in LOCALIZATION_ROWS:
+        if label in records:
+            delta = T.delta_vs_obr(records[label], obr)
+            rows.append(" & ".join([label, T.ppl_cell(records[label]),
+                                    "--" if records[label] is obr else f"${delta:+.1f}\\%$"]))
+    header = r"Layers with asymmetric target & WikiText-2 test (val) & vs OBR"
     return "localization", _render("lcc", header, [rows])
 
 
@@ -326,6 +348,20 @@ ZEROSHOT_MAIN = {("W4A4", "s50"), ("W4A4", "4to8p-obs"), ("W4A4", "4to8p40-obs")
                  ("W2A16", "s50")}
 
 
+FP16_RESULTS = T.ROOT / "results" / "fp16"
+
+
+def _fp16_zeroshot_row(model: str) -> list[str]:
+    """The uncompressed fp16 reference of a model (never bolded), if evaluated."""
+    path = FP16_RESULTS / f"{model}__zeroshot.json"
+    if not path.exists():
+        print(f"  no fp16 zeroshot reference for {model}")
+        return []
+    scores = json.loads(path.read_text(encoding="utf-8"))["zeroshot"]
+    cells = [f"{float(scores[key]):.1f}" for key, _ in ZEROSHOT_TASKS]
+    return [" & ".join([MODEL_DISP[model], "FP16 reference", "dense", *cells])]
+
+
 def _zeroshot_rows(runs, keep) -> list[list[str]]:
     """Two rows (OBR, QDrift) per setting, one block per model; in every column
     the higher accuracy of the pair is bold (zero-shot is not uniformly in
@@ -351,7 +387,9 @@ def _zeroshot_rows(runs, keep) -> list[list[str]]:
             oa, sa = round(float(oz[key]), 1), round(float(sz[key]), 1)
             ocells.append(f"$\\mathbf{{{oa:.1f}}}$" if oa > sa else f"{oa:.1f}")
             scells.append(f"$\\mathbf{{{sa:.1f}}}$" if sa > oa else f"{sa:.1f}")
-        rows = blocks.setdefault(model, [])
+        if model not in blocks:
+            blocks[model] = _fp16_zeroshot_row(model)
+        rows = blocks[model]
         rows.append(" & ".join([MODEL_DISP[model], setting, "OBR", *ocells]))
         rows.append(" & ".join(["", "", f"QDrift {_sel_label(obr, sel)}", *scells]))
     if not blocks:
