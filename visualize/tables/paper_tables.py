@@ -39,6 +39,15 @@ def _sel_label(obr: dict, selected: dict) -> str:
 # --------------------------------------------------------------------------- #
 # Table 3 -- main results
 # --------------------------------------------------------------------------- #
+def _nm_label(pattern: str, pairwise: str, mixed: str) -> str:
+    """Label of a 4:8 pattern: every layer pairwise (``4to8p``, the INT4-deployable
+    layout) or only a share of the layers pairwise (``4to8p40``), the rest
+    element-wise 4:8."""
+    if not pattern.startswith("4to8"):
+        return ""
+    return pairwise if pattern.split("-")[0] == "4to8p" else mixed
+
+
 MAIN_SPEC = [
     ("llama2-7b", "W4A4", "s50"), ("llama2-7b", "W4A4", "s60"),
     ("llama2-7b", "W4A4", "s70"), ("llama2-7b", "W4A4", "4to8p-obs"),
@@ -65,7 +74,7 @@ def main_results(runs) -> tuple[str, str]:
         if obr is None:
             continue
         pairwise = pattern.startswith("4to8")
-        setting = T.BITS_LABEL[bits] + (" pairwise 4:8" if pairwise else "")
+        setting = T.BITS_LABEL[bits] + _nm_label(pattern, " pairwise 4:8", " mixed 4:8")
         sparsity = "4:8" if pairwise else SPARSITY_DISP[pattern]
         qcell = T.qdrift_cell(sel, obr) if sel is not obr else "--"
         row = " & ".join([
@@ -390,7 +399,8 @@ def _zeroshot_rows(runs, keep) -> list[list[str]]:
             print(f"  skip zeroshot row {model} {bits} {pattern}: no zeroshot")
             continue
         pairwise = pattern.startswith("4to8")
-        setting = T.BITS_LABEL[bits] + (" 4:8p" if pairwise else f" {SPARSITY_DISP[pattern]}")
+        setting = T.BITS_LABEL[bits] + (_nm_label(pattern, " 4:8p", " 4:8m") if pairwise
+                                         else f" {SPARSITY_DISP[pattern]}")
         ocells, scells = [], []
         for key, _ in ZEROSHOT_TASKS:
             oa, sa = round(float(oz[key]), 1), round(float(sz[key]), 1)
