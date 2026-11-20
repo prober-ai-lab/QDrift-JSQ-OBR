@@ -1,195 +1,221 @@
+<div align="center">
+
 # QDrift
 
-QDrift compresses decoder-only LLMs with **pruning + quantization + compensation**
-and writes both the compressed checkpoints and a unified benchmark result file.
-Its compensation objective is a constrained mixture of three reconstruction targets
-on OBR's closed-form solver: `alpha` weights the asymmetric target
-`E||W_hat X_hat - W X||^2`, `gamma` the clean-input target, and OBR's symmetric
-target gets `1 - alpha - gamma`; `(0, 0)` is OBR.
+**A constrained mixture of reconstruction targets for joint sparsification and low-bit quantization of LLMs**
 
-Supported axes:
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+![Python](https://img.shields.io/badge/python-3.12-3776AB.svg)
+![PyTorch](https://img.shields.io/badge/pytorch-%E2%89%A52.6-EE4C2C.svg)
 
-- sparsity: `2:4` / `4:8` require `0.5`; `unstructured` uses `--sparsity`; dense/quant baselines use no mask
-- pruning structure: `2:4`, `4:8` (hybrid dense/pair) and `unstructured`
-- pruning criterion: magnitude, WANDA, SparseGPT (`w^2 / [H^-1]_jj`)
-- weight/activation/KV granularity: per-tensor, per-channel, per-token, per-group
-- WAKV: weight/activation/KV 1-4 bit, with INT8 Tensor Core GEMM
-- 2:4 + INT4 weights (W4A16): Sparse-Marlin FP16xINT4 sparse kernel
-- `2:4` / `4:8` + INT4 weights/activations (W4A4, channel/tensor scales):
-  dense CUTLASS INT4 for the dense fraction, CUTLASS INT4 sparse for the
-  pairwise fraction selected by `--pairwise-fraction`
-- 2:4 + INT1-3/8: CUTLASS INT8 sparse Tensor Cores (standard 2:4)
+</div>
 
-Terminology:
+QDrift compresses decoder-only LLMs by pruning, quantization and closed-form error compensation,
+all at once and without retraining. It builds on OBR's two-stage compensation and changes the
+objective that compensation minimizes.
 
-- **2:4 / 4:8** = OBR-style arbitrary N:M. The same names also select the hybrid mask policy: a `--pairwise-fraction` of their layers use the hardware pair layout, the rest use dense INT4.
-- **pairwise fraction** = fraction of least-sensitive layers using the hardware pair mask. `1.0` means all sparse pair layers; `0.0` means all dense N:M layers.
-- weight bits: 1-4 (1-3 stored as a little-endian bitstream, 4 as packed nibbles)
-- grid: mid-rise / mid-tread (`--grid`; `--a-grid` / `--kv-grid` override activations and KV)
-- range: full / clip-search
-- weight quantizer: RTN / GPTQ
-- compensation: none / OBR / QDrift mixture (`--comp drift --mix-asym ALPHA --mix-clean GAMMA`)
-- rotation: fast Hadamard / none
+OBR fits each layer to the input *drifted* by the already compressed prefix, so the drift it
+inherits is never corrected. Correcting that drift fully (the asymmetric, GPTAQ-style target)
+overfits the small calibration set. QDrift instead minimizes a constrained mixture of three
+targets:
 
-Default recipe follows OBR's setup: GPTQ, W4A4KV4, mid-tread, range-clip
-weights, per-channel weights and per-token activations/KV, WANDA, damping
-`0.01`, and `128×2048` calibration.
-For structured `2:4` / `4:8`, `--pairwise-fraction` controls the fraction of
-least-sensitive layers using hardware pair masks:
-`1.0` = all pairwise/sparse, `0.0` = all dense N:M.
+$$
+\min_{\hat W}\ \alpha\,\underbrace{\mathbb E\|\hat W\hat X - WX\|^2}_{\text{asymmetric}}
+\;+\;\beta\,\underbrace{\mathbb E\|\hat W\hat X - W\hat X\|^2}_{\text{OBR (symmetric)}}
+\;+\;\gamma\,\underbrace{\mathbb E\|\hat W X - WX\|^2}_{\text{clean input}},
+\qquad \beta = 1-\alpha-\gamma .
+$$
 
-For a pure OBR accuracy run, use:
+The mixture collapses to one Hessian and one per-row target, so OBR's solver, both of its stages,
+GPTQ and the mask score all run unchanged. Setting $(\alpha,\gamma)=(0,0)$ gives OBR exactly.
+
+One global $(\alpha,\gamma)$ is chosen per setting on WikiText-2 *validation* perplexity, from a
+grid that contains OBR. On that criterion QDrift is therefore never worse than OBR.
+
+A second, independent contribution is an **exact block-sequential selection of pairwise 4:8
+masks**, the only sparse layout that INT4 sparse tensor cores execute. It costs the same as GPTQ.
+
+## Highlights
+
+WikiText-2 test perplexity (lower is better). Calibration is 128 × 1024 tokens from WikiText-2,
+with a SparseGPT mask and GPTQ on the late half:
+
+| Model | Setting | OBR | QDrift | $(\alpha,\gamma)$ |
+|---|---|---:|---:|:---:|
+| LLaMA-2-7B | W4A4KV4, 70% unstructured | 35.18 | **23.30** (−33.8%) | (0.25, 0) |
+| LLaMA-2-7B | W2A16 g128, 50% unstructured | 30.55 | **9.24** (−69.8%) | (0.5, 0) |
+| LLaMA-2-7B | W4A4KV4, pairwise 4:8 (exact mask) | 18.63 | **16.15** (−13.3%) | (0.25, 0.25) |
+| LLaMA-3.1-8B | W2A16 g128, 50% unstructured | 22.59 | **15.97** (−29.3%) | (0.25, 0.25) |
+| LLaMA-2-13B | W2A16 g128, 50% unstructured | 11.01 | **7.92** (−28.0%) | (0.25, 0.25) |
+
+- **Mask.** On LLaMA-2-7B the exact pairwise mask alone lowers OBR's perplexity from 21.42 to
+  18.63.
+- **Kernels.** On an RTX 4090, the pairwise 4:8 sparse INT4 GEMM is 1.14–1.34× faster than dense
+  INT4 at prefill and 1.87–3.05× faster at decode.
+- **Zero-shot.** The gains carry over clearly at two-bit weights. Elsewhere they are roughly
+  accuracy-neutral.
+
+The full tables are in [`tables/`](tables), and every number comes from
+[`visualize/`](#reproducing-the-paper).
+
+## Installation
 
 ```bash
-scripts/compress.sh --structure 4:8 --pairwise-fraction 0.0
+git clone <this repository> && cd QDrift-JSQ-OBR
+pip install -r requirements.txt        # torch>=2.6, transformers>=5, lm-eval, ...
 ```
 
-## Sparse structures
+**Models.** Models are listed in [`modelzoo/manifest.yaml`](modelzoo/manifest.yaml): LLaMA-2
+7B/13B/70B and LLaMA-3/3.1 8B/70B. Weights are read from each entry's `local_path`.
 
-| structure | mask semantics | W4A4 kernel |
-|---|---|---|
-| `2:4` | hybrid of arbitrary 2:4 and 2:4 pairwise | dense INT4 / CUTLASS sparse |
-| `4:8` | hybrid of arbitrary 4:8 and 4:8 pairwise | dense INT4 / CUTLASS sparse |
-| `unstructured` | global top-k per output row | dense INT4/INT8 |
-
-`2:4` and `4:8` follow OBR's accuracy semantics. They are not representable by
-INT4 sparse Tensor Cores. Use `--pairwise-fraction 1.0` when all structured
-layers should use the sparse pair layout.
-
-For `range=clip`, per-channel/per-tensor weight scales use OBR's MSE shrink
-search (100-grid, `maxshrink=0.8`, `L2.4`).
+**Kernels.** The INT4 kernels are optional and only needed for the benchmarks. They compile on
+first use with `torch.utils.cpp_extension`.
+- The W4A4 dense and sparse kernels need the CUTLASS headers. Point `CUTLASS_INCLUDE` at a CUTLASS
+  `include/` directory.
+- W4A16 uses the bundled Marlin and Sparse-Marlin kernels.
 
 ## Quick start
 
-```bash
-# Install dependencies in your Python environment.
-pip install -r requirements.txt
-
-# Compress.  By default this writes four corresponding checkpoints:
-#   dense, sparse, quant, joint
-scripts/compress.sh
-
-# Unified benchmark: four-regime accuracy + prefill/decode efficiency.
-scripts/benchmark.sh --tasks all
-
-# Headline paper row (llama2-7b, W4A4KV4, 70% unstructured): OBR and QDrift.
-scripts/reproduce.sh
-
-# Hardware-sparse joint checkpoint only (CUTLASS INT4 sparse).
-scripts/compress.sh --structure 2:4 --pairwise-fraction 1.0 --w-gran channel \
-  --w-bits 4 --a-bits 4 --kv-bits 4 --single
-```
-
-`scripts/compress.sh` and `scripts/benchmark.sh` are thin wrappers around
-`python -m main`; all recipe defaults and argument construction live in
-`main.py`.  Pass `--model llama2-7b` or set `PYTHON=/path/to/python` when needed.
-
-Multi-GPU:
+Reproduce the headline row, OBR and QDrift on LLaMA-2-7B at W4A4KV4 with 70% sparsity:
 
 ```bash
-# Independent variant workers on four GPUs (default auto schedule).
-scripts/compress.sh --devices 0,1,2,3
-
-# One variant at a time, using all four GPUs inside each layer.
-scripts/compress.sh --devices 0,1,2,3 --parallel intra
+scripts/reproduce.sh                   # extra flags pass through, e.g. --devices cuda:1 --zeroshot
 ```
 
-The joint worker publishes per-layer masks so the sparse baseline can run
-concurrently; `q/k/v` and `gate/up` are layer-parallel, while `o/down` are
-row-parallel.
+Each run compresses one model, evaluates it and writes `results/v2/<run name>.json`. The JSON holds
+the WikiText-2 test and validation perplexity, plus zero-shot accuracy if `--zeroshot` is given.
+The general form is:
 
-## Checkpoints
+```bash
+python -m main run --model llama2-7b \
+  --criterion sparsegpt --structure unstructured --sparsity 0.7 \
+  --w-bits 4 --a-bits 4 --kv-bits 4 --w-gran channel --grid midtread --range clip --quant gptq \
+  --nsamples 128 --seqlen 1024 --seed 42 \
+  --comp drift --mix-asym 0.25 --mix-clean 0
+```
 
-One `compress` run writes:
+## Command line
 
-| regime | weights | meaning |
+`python -m main` has three subcommands. The `scripts/` wrappers call them.
+
+| Subcommand | What it does |
+|---|---|
+| `run` | Compress one joint checkpoint under its run name and evaluate PPL (and zero-shot). Used for every paper result. |
+| `compress` | Write the four comparison checkpoints: dense, sparse, quant and joint (`scripts/compress.sh`). |
+| `benchmark` | Accuracy and efficiency of those four checkpoints (`scripts/benchmark.sh`). |
+
+The flags that matter most:
+
+| Flag | Meaning |
+|---|---|
+| `--comp {none,obr,drift}` | Compensation objective. `drift` is the QDrift mixture. |
+| `--mix-asym α`, `--mix-clean γ` | Mixture weights. `(0, 0)` is OBR and `(1, 0)` the pure asymmetric target. |
+| `--mix-blocks A-B`, `--mix-modules {attn,mlp_in,mlp_out}` | Apply the mixture only to some layers, with OBR elsewhere (localization ablation). |
+| `--structure {unstructured,2:4,4:8}`, `--sparsity` | Sparsity pattern and level. |
+| `--pairwise-fraction f` | Share of 2:4 / 4:8 layers using the hardware pairwise layout. `1.0` = every layer, the only INT4-deployable choice. |
+| `--mask-select {score,obs}` | N:M mask from the criterion score, or the exact block-sequential selection. |
+| `--criterion {magnitude,wanda,sparsegpt}` | Pruning score. |
+| `--w-bits`, `--a-bits`, `--kv-bits`, `--w-gran`, `--w-group-size`, `--grid` | Quantizer bit widths, granularity and grid (`midtread` / `midrise`). |
+| `--quant {rtn,gptq}`, `--range {full,clip}` | Weight quantizer and range search. |
+| `--nsamples`, `--seqlen`, `--seed` | WikiText-2 calibration set. |
+| `--offload` | Compress block by block from host memory, e.g. LLaMA-2-13B on a 24 GB GPU. Bit-identical. |
+| `--zeroshot`, `--eval-shard` | lm-eval zero-shot tasks, and sharding the evaluation model across GPUs. |
+
+Run `python -m main <subcommand> --help` for the rest.
+
+### Sparse layouts
+
+| `--structure` | Mask | W4A4 kernel |
 |---|---|---|
-| `dense`  | fp16 | no pruning, no quantization |
-| `sparse` | fp16 + mask | pruning only |
-| `quant`  | intN | quantization only |
-| `joint`  | intN + mask | pruning + quantization |
+| `unstructured` | Global top-k per output row | Dense INT4 |
+| `2:4`, `4:8` | Element-wise N:M in a `1 − f` share of layers, pairwise N:M in the least sensitive `f` share | Dense INT4, plus CUTLASS INT4 sparse for the pairwise layers |
 
-Example names:
+INT4 sparse tensor cores execute only **pairwise 4:8**: in every 8 input channels, keep 2 of the
+4 aligned channel pairs. Use `--structure 4:8 --pairwise-fraction 1.0` for a fully deployable
+INT4 sparse model.
 
-```text
-llama2-7b__0.0w16a16kv16__wanda_mt_rf_rtn_pc__none__cp__hc1d389d5
-llama2-7b__0.5x4to8w16a16kv16__wanda_mt_rf_rtn_pc__none__cp__pw0__h73418bef
-llama2-7b__0.0w4a4kv4__wanda_mt_rc_gptq_pc_an_kn__obr__cp__h3e67ec5e
-llama2-7b__0.5x4to8w4a4kv4__wanda_mt_rc_gptq_pc_an_kn__obr__cp__pw0.4
-```
+## Reproducing the paper
 
-Use `--single` to write only the joint checkpoint.
-
-## Results
-
-All benchmark tasks merge into one file under:
-
-```text
-results/benchmarks/<checkpoint_id>__<tasks>.json
-```
-
-The unified benchmark loads each of the four real checkpoints once and reports:
-
-- `accuracy`: PPL (WikiText-2 test, 2048-token chunks, fp32 loss) and
-  zero-shot
-- `efficiency`: real-kernel prefill/decode latency, throughput, load time,
-  peak memory, checkpoint size and compression ratio
-
-## Paper results
-
-The paper's runs use `python -m main run`, which compresses one joint checkpoint,
-evaluates WikiText-2 test and validation perplexity (and zero-shot with
-`--zeroshot`), and writes `results/v2/<run name>.json`.  The protocol is SparseGPT
-masks, GPTQ late half, `128x1024` WikiText-2 calibration, and one global
-`(alpha, gamma)` per setting, selected on validation perplexity from a grid that
-contains OBR.  `scripts/reproduce.sh` runs the headline row.
-
-Everything the paper shows is generated from the result records:
+Everything the paper shows is generated from the result records. No number, table or figure is
+written by hand.
 
 ```bash
-python visualize/tables/paper_tables.py    # tables/tex/*.tex, tables/pdf/*.pdf, tables/*.png
+python visualize/tables/paper_tables.py    # tables/tex/*.tex · tables/pdf/*.pdf · tables/*.png
 python visualize/tables/paper_numbers.py   # tables/tex/numbers.tex: \qd{<key>} for every number in the text
-python visualize/plots/paper_figures.py    # figs/*.png, figs/pdf/*.pdf
+python visualize/plots/paper_figures.py    # figs/*.png · figs/pdf/*.pdf
 ```
 
-`figs/` and `tables/` are committed; rebuilding unchanged inputs reproduces them
-byte for byte.
+- **Protocol.** WikiText-2 only: calibrate on train, select $(\alpha,\gamma)$ on validation, report
+  test at sequence length 2048.
+- **Determinism.** `figs/` and `tables/` are committed, and an unchanged rebuild reproduces them
+  byte for byte.
+- **Text numbers.** `numbers.tex` uses the same selection code as the tables, so the text and the
+  tables cannot disagree. An unknown key is a LaTeX compile error.
 
+## Checkpoints and benchmarks
 
-## Standalone sparse/quant inference benchmark
+`compress` writes four checkpoints per recipe, each named by its full recipe:
 
-`main benchmark --engine inference` loads the four QDrift checkpoints and
-measures them with the graph-friendly runtime:
-
-| regime | weights | kernel |
+| Regime | Weights | Meaning |
 |---|---|---|
-| `dense` | FP16 | cuBLAS + SDPA |
-| `sparse_fp16` | 2:4 sparse FP16 | PyTorch CUTLASS sparse |
-| `int4_marlin` | INT4 W4A16 | Marlin |
-| `joint_sparse_int4` | standard 2:4 + INT4 W4A16 | Sparse-Marlin |
+| `dense` | fp16 | No pruning, no quantization |
+| `sparse` | fp16 + mask | Pruning only |
+| `quant` | intN | Quantization only |
+| `joint` | intN + mask | Pruning + quantization |
+
+`benchmark` loads each checkpoint once. It merges everything into
+`results/benchmarks/<checkpoint>__<tasks>.json`:
+- accuracy: WikiText-2 perplexity and zero-shot;
+- efficiency: real-kernel prefill and decode latency, throughput and peak memory.
 
 ```bash
-CUDA_VISIBLE_DEVICES=2 python3 -m main benchmark \
-  --model llama2-7b \
-  --structure 2:4 --sparsity 0.5 --criterion magnitude \
-  --w-bits 4 --w-gran channel \
-  --a-bits 4 --kv-bits 4 \
-  --quant gptq --comp none --rotation none \
-  --pairwise-fraction 1.0 \
-  --tasks e2e --engine inference --batch-size 8 \
-  --e2e-seqlen 1024 --e2e-decode-tokens 64 \
-  --e2e-warmup 2 --e2e-iters 5 --replace
+scripts/compress.sh --model llama2-7b --structure 4:8 --pairwise-fraction 1.0 --single
+scripts/benchmark.sh --model llama2-7b --structure 4:8 --pairwise-fraction 1.0 --tasks all
 ```
 
-If structured sparse acceleration is unavailable, the benchmark does not abort:
-`sparse`/`joint` e2e are skipped, but their PPL/zero-shot are still evaluated
-with dense/int fallbacks, and `dense`/`quant` e2e keeps running.  Use
-`--no-sparse-accel` to force this mode on a sparse-capable GPU.
+`--engine inference` measures the graph-friendly runtime instead. It runs cuBLAS for dense, CUTLASS
+sparse for sparse fp16, and Marlin / Sparse-Marlin for INT4 W4A16, and it requires
+`--rotation none`. If structured sparse acceleration is unavailable, the sparse e2e measurements
+are skipped and accuracy falls back to dense kernels (`--no-sparse-accel` forces this).
 
-The inference engine consumes the four QDrift checkpoints and labels them
-`dense`, `sparse_fp16`, `int4_marlin`, `joint_sparse_int4`.  Use `--a-bits 4`
-checkpoints for the W4A4/joint-sparse-W4A4 path.  KV precision comes from the
-checkpoint recipe (`--kv-bits`); the inference engine falls back to
-KV16 if they differ.  The default
-`--e2e-regimes dense,sparse,quant,joint` evaluates every effective path, including the FP16 sparse baseline.  The engine
-requires `--rotation none`; rotated checkpoints use `--engine hf`.
+## Repository layout
+
+```text
+main.py                    single entry point: run / compress / benchmark
+qdrift/
+  compress/                recipes, run names, the layer-wise compression pipeline
+  obr/                     OBR compensation, calibration streams, the QDrift mixture (drift.py)
+  prune/                   pruning criteria, N:M and pairwise masks, exact mask selection
+  quant/                   quantizers, scale search, GPTQ, packing
+  quarot/, models/         Hadamard rotation and model loading
+benchmark/                 evaluation, inference runtime, INT4 / Marlin / CUTLASS kernels
+minitests/                 focused diagnostics (e.g. drift accumulation)
+visualize/                 paper tables, text numbers and figures
+tables/, figs/             generated paper artefacts (committed)
+tests/                     unit tests (mixture, OBR identity, mask selection, activation quantizer)
+scripts/                   shell wrappers and reproduce.sh
+```
+
+## Tests
+
+```bash
+pytest tests/
+```
+
+The tests need PyTorch. `test_obr_identity.py` checks that $(0,0)$ reproduces OBR
+exactly. `test_mixture.py` checks the mixture algebra and the localized mixture.
+
+## Acknowledgements
+
+Parts of this code are adapted from the following projects, under their Apache-2.0 licenses. The
+source and commit are noted at the top of each adapted file.
+- [OBR](https://github.com/csguoh/OBR): compensation.
+- [QuaRot](https://github.com/spcl/QuaRot): rotation, Hadamard transforms, packing and the dense
+  INT4 CUTLASS GEMM.
+- [Sparse-Marlin](https://github.com/IST-DASLab/Sparse-Marlin): the Marlin and Sparse-Marlin
+  kernels in `benchmark/kernels/marlin`, with their own
+  [LICENSE](benchmark/kernels/marlin/LICENSE).
+
+## License
+
+QDrift is released under the [Apache License 2.0](LICENSE).
