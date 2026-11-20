@@ -5,9 +5,10 @@ regimes on LLaMA-2-7B — no compression, sparsification only, quantization only
 the joint regime QDrift targets. Two panels: WikiText-2 perplexity (degradation,
 higher is worse) and weight memory (efficiency, lower is better).
 
-Numbers are measured by the inference-runtime benchmark (`main benchmark`): PPL from
-the `ppl` task (`results/benchmarks/*__ppl.json`), weight memory from the `e2e` task
-(`*__e2e.json`). They are one-off and hard-coded here rather than read live.
+Numbers are read live from the inference-runtime benchmark (`main benchmark`): PPL from
+the `ppl` task (`results/benchmarks/*__ppl.json`), weight and peak memory from the `e2e`
+task (`*__e2e.json`).  The sparsify-only PPL is the one measured constant (see
+SPARSE_ONLY_PPL); the benchmark's own `sparse` entry is the dense model.
 
     python visualize/plots/regime_tradeoff.py
 """
@@ -18,26 +19,53 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import json  # noqa: E402
+
 import style as S  # noqa: E402
 
 MODEL = "llama2-7b"
+BENCH = Path(__file__).resolve().parents[2] / "results" / "benchmarks"
+# One-off measurement, not saved as a record: fp16 LLaMA-2-7B with a 50% unstructured
+# SparseGPT mask and no quantization, WikiText-2 test at 2048.
+SPARSE_ONLY_PPL = 6.39
 
-# (label, WikiText-2 test PPL, weight memory GB = e2e weight_bytes / 1e9).  7B W4A4 unstructured s0.5, OBR.
-# PPL: dense/quant/joint measured; sparse = fp16 + 50% unstructured sparsegpt mask.
-REGIMES = [
-    ("No\ncompression", 5.47, 13.5),
-    ("Sparsify\nonly (50%)", 6.39, 13.5),   # measured: fp16 + 50% unstructured sparsegpt mask
-    ("Quantize\nonly (W4A4)", 6.15, 3.8),
-    ("Sparsify +\nquantize", 7.74, 3.8),
-]
+
+def _bench(task: str) -> dict:
+    """The single LLaMA-2-7B W4A4 s0.5 OBR run of one benchmark task."""
+    paths = sorted(BENCH.glob(f"{MODEL}__0.5w4a4kv4__*__obr__*__{task}.json"))
+    if len(paths) != 1:
+        raise SystemExit(f"expected one {task} benchmark for {MODEL}, found {len(paths)}")
+    runs = json.loads(paths[0].read_text(encoding="utf-8"))["runs"]
+    return next(iter(runs.values()))
+
+
+def regimes() -> tuple[list[tuple[str, float, float]], dict[str, float]]:
+    """``[(label, test PPL, weight bytes)]`` for the four regimes, and the memory
+    record (``fp16``/``w4a4`` weight bytes, ``*_peak`` peak allocated bytes)."""
+    ppl = _bench("ppl")["accuracy"]["ppl"]["wikitext2"]
+    eff = _bench("e2e")["efficiency"]
+    mem = {
+        "fp16": eff["dense"]["memory"]["weight_bytes"],
+        "w4a4": eff["w4a4"]["memory"]["weight_bytes"],
+        "fp16_peak": eff["dense"]["memory"]["peak_allocated_bytes"],
+        "w4a4_peak": eff["w4a4"]["memory"]["peak_allocated_bytes"],
+    }
+    rows = [
+        ("No\ncompression", ppl["dense"], mem["fp16"]),
+        ("Sparsify\nonly (50%)", SPARSE_ONLY_PPL, mem["fp16"]),
+        ("Quantize\nonly (W4A4)", ppl["quant"], mem["w4a4"]),
+        ("Sparsify +\nquantize", ppl["joint"], mem["w4a4"]),
+    ]
+    return rows, mem
 
 
 def main() -> None:
     S.setup()
-    labels = [r[0] for r in REGIMES]
-    ppl = [r[1] for r in REGIMES]
-    mem = [r[2] for r in REGIMES]
-    x = list(range(len(REGIMES)))
+    rows, _ = regimes()
+    labels = [r[0] for r in rows]
+    ppl = [r[1] for r in rows]
+    mem = [r[2] / 1e9 for r in rows]
+    x = list(range(len(rows)))
 
     fig, (axp, axm) = S.plt.subplots(1, 2, figsize=(7.0, 2.7))
 

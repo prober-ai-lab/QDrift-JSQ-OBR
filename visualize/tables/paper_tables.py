@@ -249,14 +249,32 @@ def compression_time(runs) -> tuple[str, str]:
 # --------------------------------------------------------------------------- #
 # Measured-constant tables (not in results/v2)
 # --------------------------------------------------------------------------- #
+# Dense vs pairwise-4:8 sparse INT4 GEMM, LLaMA-2-7B linear shapes, SM 8.9, measured once
+# with benchmark/kernels/checks/w4a4_check.py::bench_shape (not saved as a record).
+# Per phase: (dense us, sparse us, speedup); the speedup is from the unrounded timings.
+GEMM_US = [
+    {"layer": "q/o-proj", "shape": r"$4096\times4096$",
+     "prefill": (73.5, 60.8, 1.21), "decode": (31.5, 16.8, 1.87)},
+    {"layer": "gate/up-proj", "shape": r"$11008\times4096$",
+     "prefill": (226.9, 169.1, 1.34), "decode": (31.4, 12.0, 2.61)},
+    {"layer": "down-proj", "shape": r"$4096\times11008$",
+     "prefill": (163.1, 143.6, 1.14), "decode": (75.9, 24.8, 3.05)},
+]
+
+
 def gemm_efficiency(_runs) -> tuple[str, str]:
-    """Table 6 -- dense vs pairwise-4:8 sparse INT4 GEMM on LLaMA-2-7B linear
-    shapes, SM 8.9 (benchmark/kernels/checks/w4a4_check.py::bench_shape)."""
-    rows = [
-        r"q/o-proj & $4096\times4096$ & 73.5 & 60.8 & 1.21$\times$ & 31.5 & 16.8 & 1.87$\times$",
-        r"gate/up-proj & $11008\times4096$ & 226.9 & 169.1 & 1.34$\times$ & 31.4 & 12.0 & 2.61$\times$",
-        r"down-proj & $4096\times11008$ & 163.1 & 143.6 & 1.14$\times$ & 75.9 & 24.8 & \textbf{3.05$\times$}",
-    ]
+    """Table 6 -- dense vs pairwise-4:8 sparse INT4 GEMM (``GEMM_US``)."""
+    best = max(row["decode"][2] for row in GEMM_US)
+    rows = []
+    for row in GEMM_US:
+        cells = [row["layer"], row["shape"]]
+        for phase in ("prefill", "decode"):
+            dense, sparse, speedup = row[phase]
+            cell = f"{speedup:.2f}$\\times$"
+            if phase == "decode" and speedup == best:
+                cell = f"\\textbf{{{cell}}}"
+            cells += [f"{dense:.1f}", f"{sparse:.1f}", cell]
+        rows.append(" & ".join(cells))
     header = (
         r" & & \multicolumn{2}{c}{Prefill ($R{=}2048$)} & & \multicolumn{2}{c}{Decode ($R{=}32$)} & \\"
         + "\n"
