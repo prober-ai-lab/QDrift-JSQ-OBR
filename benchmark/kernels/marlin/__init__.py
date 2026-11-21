@@ -305,14 +305,17 @@ class _MarlinBase:
         out_features: int,
         padded_in: int,
         padded_out: int,
+        device: torch.device,
     ) -> None:
         self.in_features = int(in_features)
         self.out_features = int(out_features)
         self.padded_in_features = int(padded_in)
         self.padded_out_features = int(padded_out)
+        # On the weight's own device: under a multi-GPU device map, "cuda" would
+        # be the current device, not the layer's, and the kernel faults.
         self.workspace = torch.zeros(
             self.padded_out_features // 128 * 16,
-            device="cuda",
+            device=device,
             dtype=torch.int32,
         )
 
@@ -333,7 +336,7 @@ class MarlinWeight(_MarlinBase):
     """Dense INT4 W4A16 Marlin weight."""
 
     def __init__(self, packed, scales, in_features, out_features, padded_in, padded_out):
-        super().__init__(in_features, out_features, padded_in, padded_out)
+        super().__init__(in_features, out_features, padded_in, padded_out, packed.device)
         self.packed = packed.contiguous()
         self.scales = scales.contiguous()
 
@@ -344,9 +347,10 @@ class MarlinWeight(_MarlinBase):
             device=x.device,
             dtype=x.dtype,
         )
-        marlin_module().mul(
-            x, self.packed, out, self.scales, self.workspace, -1, -1, -1, 8
-        )
+        with torch.cuda.device(x.device):  # launch on the layer's device
+            marlin_module().mul(
+                x, self.packed, out, self.scales, self.workspace, -1, -1, -1, 8
+            )
         return out[:, : self.out_features]
 
 
@@ -363,7 +367,7 @@ class SparseMarlinWeight(_MarlinBase):
         padded_in,
         padded_out,
     ):
-        super().__init__(in_features, out_features, padded_in, padded_out)
+        super().__init__(in_features, out_features, padded_in, padded_out, packed.device)
         self.packed = packed.contiguous()
         self.meta = meta.contiguous()
         self.scales = scales.contiguous()
@@ -375,18 +379,19 @@ class SparseMarlinWeight(_MarlinBase):
             device=x.device,
             dtype=x.dtype,
         )
-        marlin_module().mul_2_4(
-            x,
-            self.packed,
-            self.meta,
-            out,
-            self.scales,
-            self.workspace,
-            -1,
-            -1,
-            -1,
-            8,
-        )
+        with torch.cuda.device(x.device):  # launch on the layer's device
+            marlin_module().mul_2_4(
+                x,
+                self.packed,
+                self.meta,
+                out,
+                self.scales,
+                self.workspace,
+                -1,
+                -1,
+                -1,
+                8,
+            )
         return out[:, : self.out_features]
 
 
