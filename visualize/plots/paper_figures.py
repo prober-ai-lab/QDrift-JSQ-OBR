@@ -11,7 +11,7 @@ can be rebuilt with one command (the table counterpart is
     python visualize/plots/paper_figures.py --only drift
 
 Figure -> paper:
-    regime (Fig. 1) · drift (Figs. 2-4) · pipeline (Fig. 5) · alpha_curve (Fig. 6)
+    regime (Fig. 1) · drift (Figs. 2-4) · pipeline (Fig. 5)
     · ppl_vs_sparsity (Fig. 7) · alpha_profiles (Sec. 5.3) · delta_vs_obr (Sec. 5.2)
     · localization (Sec. 3.3) · pairwise (Sec. 4.4)
 """
@@ -44,13 +44,6 @@ def build_drift() -> None:
         sys.argv = argv
 
 
-def build_alpha_curve() -> None:
-    """Figure 6: the alpha-sweep U-curve at W4A4KV4 70% (LLaMA-2-7B)."""
-    points = grid.load_points("llama2-7b", "w4a4_s70")
-    if points:
-        grid.alpha_curve(points, "llama2-7b", "w4a4_s70")
-
-
 def build_ppl_vs_sparsity() -> None:
     """Figure 7: perplexity against sparsity for W4A4 (LLaMA-2-7B)."""
     grid.ppl_vs_sparsity("llama2-7b", "w4a4")
@@ -61,7 +54,6 @@ BUILDERS = {
     "drift": build_drift,
     "pipeline": pipeline.main,
     "pairwise": pairwise.main,
-    "alpha_curve": build_alpha_curve,
     "ppl_vs_sparsity": build_ppl_vs_sparsity,
     "alpha_profiles": grid.alpha_profiles,
     "delta_vs_obr": grid.delta_vs_obr,

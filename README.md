@@ -75,13 +75,13 @@ with a SparseGPT mask and GPTQ on the late half:
   accuracy-neutral.
 
 <p align="center">
-  <img src="figs/png/results__mixture_grid__llama2-7b__alpha-curve-w4a4-s70.png" width="46%"
-       alt="Perplexity against the asymmetric weight alpha"/>
+  <img src="figs/png/results__mixture_grid__all__alpha-profiles.png" width="46%"
+       alt="Validation perplexity relative to OBR against the asymmetric weight alpha"/>
   <img src="figs/png/results__mixture_grid__llama2-7b__ppl-vs-sparsity-w4a4.png" width="46%"
        alt="Perplexity against sparsity for OBR, the pure asymmetric target and QDrift"/>
   <br/>
-  <sub><em>Left: on LLaMA-2-7B at W4A4KV4 with 70% sparsity, a small asymmetric weight
-  (α = 0.25) wins, while the pure target (α = 1) is worse than OBR (α = 0). Right: across sparsity
+  <sub><em>Left: in every swept setting a small asymmetric weight beats OBR (α = 0), and
+  the range of α that does so shrinks as sparsity rises; the pure target (α = 1) is often worse. Right: across sparsity
   levels, the selected mixture stays below OBR, while the pure target crosses above it.</em></sub>
 </p>
 

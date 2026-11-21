@@ -5,11 +5,6 @@
 Unlike the minitest figures, this script reads ``results/v2/`` run records
 (one per (alpha, gamma) point) rather than ``results/minitests/``.
 
-``alpha-curve``
-    WikiText-2 perplexity against the asymmetric weight alpha at gamma = 0,
-    test and validation, for one model and compression setting.  This is the
-    single-minimum curve of the alpha-sweep ablation (Table 4) as a figure.
-
 ``delta-vs-obr`` (all models)
     Test perplexity of the selected QDrift and of the pure asymmetric target
     (1, 0), relative to OBR, for every row of the main table (Table 3).
@@ -18,7 +13,7 @@ Unlike the minitest figures, this script reads ``results/v2/`` run records
     Test-perplexity change against OBR when the pure asymmetric target is
     applied to a subset of the layers only (Table 2 as a figure).
 
-    python visualize/plots/mixture_grid.py --setting w4a4_s70 --model llama2-7b
+    python visualize/plots/mixture_grid.py --model llama2-7b --sweep w4a4
 """
 
 from __future__ import annotations
@@ -81,37 +76,6 @@ def load_points(model: str, setting: str, calib: str = "c128x1024") -> list[dict
         }
         print(f"read {path.name}: (a={alpha}, g={gamma}) test={test:.2f} val={val:.2f}")
     return list(points.values())
-
-
-def alpha_curve(points: list[dict], model: str, setting: str) -> None:
-    """Perplexity against alpha at gamma = 0."""
-    line = sorted((p for p in points if p["gamma"] == 0.0), key=lambda p: p["alpha"])
-    if len(line) < 3:
-        print(f"alpha-curve: only {len(line)} gamma=0 points, skipping")
-        return
-    alphas = [p["alpha"] for p in line]
-    fig, ax = S.plt.subplots(figsize=(3.6, 2.4))
-    for key, color, label in (
-        ("test", S.SERIES[1], "test"),
-        ("val", S.SERIES[0], "validation"),
-    ):
-        ax.plot(alphas, [p[key] for p in line], color=color, marker="o", label=label)
-    best = min(line, key=lambda p: p["val"])
-    ax.axvline(best["alpha"], color=S.MUTED, linewidth=0.8, linestyle=":")
-    ax.scatter([best["alpha"]], [best["test"]], color=S.INK, s=22, zorder=5)
-    ax.annotate(
-        f"selected $\\alpha={best['alpha']:g}$\n{best['test']:.2f}",
-        (best["alpha"], best["test"]),
-        textcoords="offset points",
-        xytext=(6, 8),
-        fontsize=7,
-        color=S.INK,
-    )
-    ax.set_xlabel(r"asymmetric weight $\alpha$ ($\gamma=0$)")
-    ax.set_ylabel("WikiText-2 perplexity")
-    S.panel_label(ax, f"{_pretty(setting)} ($\\alpha$-sweep, OBR at $\\alpha=0$)")
-    ax.legend(loc="upper center")
-    S.save(fig, _name(model, "alpha-curve", setting))
 
 
 def ppl_vs_sparsity(model: str, quant: str) -> None:
@@ -362,21 +326,12 @@ def _name(model: str, content: str, setting: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--model", default="llama2-7b")
-    parser.add_argument("--setting", default="w4a4_s70")
     parser.add_argument(
-        "--sweep",
-        default=None,
-        help="bit-width tag (e.g. w4a4) -> PPL-vs-sparsity figure, then exit",
+        "--sweep", default="w4a4", help="bit-width tag of the PPL-vs-sparsity figure"
     )
     args = parser.parse_args()
     S.setup()
-    if args.sweep:
-        ppl_vs_sparsity(args.model, args.sweep)
-        return
-    points = load_points(args.model, args.setting)
-    if not points:
-        raise SystemExit(f"no results/v2 points for {args.model} / {args.setting}")
-    alpha_curve(points, args.model, args.setting)
+    ppl_vs_sparsity(args.model, args.sweep)
 
 
 if __name__ == "__main__":
