@@ -277,6 +277,15 @@ LOCALIZATION_ORDER = (
 )
 
 
+# Axis labels of the localization rows: block ranges and sublayer groups.
+LOCALIZATION_SHORT = {
+    "blocks 0--3": "blocks 0–3", "blocks 0--7": "0–7", "blocks 0--11": "0–11",
+    "blocks 0--15": "0–15", "all blocks": "all", "blocks 8--31": "8–31",
+    "attention only": "attention", "MLP gate/up-proj only": "gate/up",
+    "MLP down-proj only": "down",
+}
+
+
 def localization() -> None:
     """Change of test PPL against OBR with the pure target on a subset of layers."""
     tags = dict(P.LOCALIZATION_ROWS)
@@ -291,24 +300,24 @@ def localization() -> None:
         print("localization: the localized runs are missing, skipping")
         return
     deltas = [T.delta_vs_obr(records[label], obr) for label in labels]
-    fig, ax = S.plt.subplots(figsize=(3.4, 2.5))
+    # Axes width chosen so the tight bounding box, y labels included, is one column (~3.3 in).
+    fig, ax = S.plt.subplots(figsize=(2.75, 2.35))
     ys = list(range(len(labels)))[::-1]
     colors = [S.SERIES[0] if d < 0 else WORSE for d in deltas]
     ax.barh(ys, deltas, color=colors, height=0.62)
-    for y, d in zip(ys, deltas):
-        ax.annotate(f"{d:+.0f}%", (d, y), textcoords="offset points",
-                    xytext=(3 if d >= 0 else -3, 0), ha="left" if d >= 0 else "right",
-                    va="center", fontsize=6, color=S.INK_2)
+    for y, d in zip(ys, deltas):  # every value right of its bar or of the zero line
+        ax.annotate(f"{d:+.0f}%", (max(d, 0.0), y), textcoords="offset points", xytext=(3, 0),
+                    ha="left", va="center", fontsize=7, color=S.INK_2)
     ax.axvline(0, color=S.INK_2, linewidth=0.8)
-    ax.set_xscale("symlog", linthresh=100)
-    ax.set_xlim(-150, 1e5)
-    ax.set_xticks([-100, -50, 0, 50, 100, 1000, 10000])
-    ax.set_xticklabels(["$-$100", "$-$50", "0", "50", "100", "10$^3$", "10$^4$"])
-    ax.set_yticks(ys, [label.replace("--", "–") for label in labels])
-    ax.tick_params(axis="y", labelsize=6.5)
+    ax.set_xscale("symlog", linthresh=50)
+    ax.set_xlim(-60, 2e5)
+    ax.set_xticks([-50, 0, 50, 1000, 10000])
+    ax.set_xticklabels(["$-$50", "0", "50", "10$^3$", "10$^4$"])
+    ax.set_yticks(ys, [LOCALIZATION_SHORT[label] for label in labels])
+    ax.tick_params(axis="y", labelsize=7.5, labelcolor=S.INK_2)
     ax.grid(axis="y", visible=False)
+    ax.set_ylabel("layers with the pure target")
     ax.set_xlabel("test PPL change vs. OBR (%)")
-    S.panel_label(ax, r"pure target $(1,0)$ on these layers, OBR elsewhere")
     S.save(fig, "results__mixture_grid__llama2-7b__localization-w4a4-s70")
 
 

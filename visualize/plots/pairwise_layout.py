@@ -36,7 +36,7 @@ def draw_row(ax, y: float, row: tuple[int, ...], group: int, cell: float = 1.0) 
 
 def patterns() -> None:
     fig, (left, right) = S.plt.subplots(
-        1, 2, figsize=(6.9, 1.3), gridspec_kw={"width_ratios": [1.45, 1]}
+        1, 2, figsize=(6.9, 1.15), gridspec_kw={"width_ratios": [1.45, 1]}
     )
     rows = (
         ("element-wise 2:4", ELEMENTWISE_24, 4),
@@ -45,7 +45,7 @@ def patterns() -> None:
     for i, (label, row, group) in enumerate(rows):
         y = 2.2 * (len(rows) - 1 - i)
         draw_row(left, y, row, 8)
-        left.text(-0.6, y + 0.45, label, ha="right", va="center", fontsize=7, color=S.INK)
+        left.text(-0.6, y + 0.45, label, ha="right", va="center", fontsize=7.5, color=S.INK)
         for k in range(0, 16, group):  # bracket the groups the constraint acts on
             x = k + (k // 8) * 0.5
             left.plot([x + 0.05, x + group - 0.15], [y - 0.3, y - 0.3],
@@ -70,8 +70,8 @@ def patterns() -> None:
         ax.axis("off")
     handles = [Rectangle((0, 0), 1, 1, facecolor=KEPT, edgecolor=S.INK_2, linewidth=0.6),
                Rectangle((0, 0), 1, 1, facecolor=PRUNED, edgecolor=S.INK_2, linewidth=0.6)]
-    fig.legend(handles, ["retained", "pruned"], loc="lower center", ncol=2,
-               bbox_to_anchor=(0.5, -0.08), frameon=False)
+    right.legend(handles, ["retained", "pruned"], loc="center left", ncol=1,
+                 bbox_to_anchor=(1.0, 0.45), frameon=False, fontsize=7)
     S.save(fig, "method__pairwise_layout__all__patterns")
 
 
