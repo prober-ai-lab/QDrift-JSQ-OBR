@@ -16,6 +16,12 @@
     layer type (OBR run), and the share actually removed by each mode,
     1 - total / (injected + inherited).
 
+``heldout-gap-vs-depth``
+    The same two shares measured on the calibration tokens and on held-out
+    WikiText-2 test tokens, with the compressed weight and the update fitted on
+    calibration only.  The gap between the two is how much of each correction
+    is fitted to the calibration sample rather than to the drift.
+
     python visualize/plots/drift_accumulation.py
 """
 
@@ -151,6 +157,49 @@ def cancel_figure(rows: list[dict], model: str) -> None:
     S.save(fig, S.figure_name(STEM, model, "cancellable-drift-vs-depth"))
 
 
+def _removed(rows: list[dict], comp: str, prefix: str = "") -> tuple[list, list]:
+    """Block-wise mean share of the summed error that ``comp`` removes."""
+    removed = defaultdict(list)
+    for r in rows:
+        if r["comp"] == comp:
+            summed = r[f"{prefix}injected"] + r[f"{prefix}inherited"]
+            removed[r["block"]].append(1 - r[f"{prefix}total"] / summed)
+    blocks = sorted(removed)
+    return blocks, [100 * float(np.mean(removed[b])) for b in blocks]
+
+
+def heldout_figure(rows: list[dict], model: str) -> None:
+    """Plot the calibration and held-out shares of cancelled and removed drift."""
+    comps = [c for c in comps_of(rows) if c != "none"]
+    fig, axes = S.plt.subplots(1, 2, figsize=(6.6, 2.3))
+    splits = (("", "-", "calibration"), ("held_", "--", "held-out"))
+    for comp in comps:
+        for prefix, style, split in splits:
+            cancel = defaultdict(list)
+            for r in rows:
+                value = r[f"{prefix}cancel"]
+                if r["comp"] == comp and not math.isnan(value):
+                    cancel[r["block"]].append(value)
+            blocks = sorted(cancel)
+            axes[0].plot(blocks, [100 * np.mean(cancel[b]) for b in blocks],
+                         color=S.COMP_COLOR[comp], linestyle=style,
+                         label=f"{S.COMP_LABEL[comp]}, {split}")
+            axes[1].plot(*_removed(rows, comp, prefix), color=S.COMP_COLOR[comp],
+                         linestyle=style, label=f"{S.COMP_LABEL[comp]}, {split}")
+    axes[0].set_ylabel("cancellable share of $\\|W\\Delta x\\|^2$ (%)")
+    S.panel_label(axes[0], "(a) cancellable inherited drift")
+    axes[1].axhline(0, color=S.AXIS, linewidth=0.8)
+    axes[1].set_ylabel("error removed vs. inj. + inh. (%)")
+    S.panel_label(axes[1], "(b) error removed by compensation")
+    for ax in axes:
+        ax.set_xlabel("block")
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.set_ylim(bottom=min(0, ax.get_ylim()[0]))
+    axes[1].legend(loc="upper left", bbox_to_anchor=(1.0, 1.0))
+    fig.tight_layout()
+    S.save(fig, S.figure_name(STEM, model, "heldout-gap-vs-depth"))
+
+
 def main() -> None:
     """Render every figure of this minitest."""
     args = S.arguments(__doc__.split("\n\n")[0])
@@ -165,6 +214,7 @@ def main() -> None:
     drift_figure(rows, nll, args.model)
     split_figure(rows, args.model)
     cancel_figure(rows, args.model)
+    heldout_figure(rows, args.model)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,8 @@ can be rebuilt with one command (the table counterpart is
 
 Figure -> paper:
     regime (Fig. 1) · drift (Figs. 2-4) · pipeline (Fig. 5) · alpha_curve (Fig. 6)
-    · ppl_vs_sparsity (Fig. 7) · alpha_profiles (Sec. 6)
+    · ppl_vs_sparsity (Fig. 7) · alpha_profiles (Sec. 5.3) · delta_vs_obr (Sec. 5.2)
+    · localization (Sec. 3.3) · pairwise (Sec. 4.4)
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import style as S  # noqa: E402
 import drift_accumulation as drift  # noqa: E402
 import mixture_grid as grid  # noqa: E402
+import pairwise_layout as pairwise  # noqa: E402
 import qdrift_pipeline as pipeline  # noqa: E402
 import regime_tradeoff as regime  # noqa: E402
 
@@ -58,9 +60,12 @@ BUILDERS = {
     "regime": regime.main,
     "drift": build_drift,
     "pipeline": pipeline.main,
+    "pairwise": pairwise.main,
     "alpha_curve": build_alpha_curve,
     "ppl_vs_sparsity": build_ppl_vs_sparsity,
     "alpha_profiles": grid.alpha_profiles,
+    "delta_vs_obr": grid.delta_vs_obr,
+    "localization": grid.localization,
 }
 
 

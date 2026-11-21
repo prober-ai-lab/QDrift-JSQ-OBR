@@ -55,11 +55,11 @@ MAIN_SPEC = [
     ("llama2-7b", "W4A16", "s50"), ("llama2-7b", "W4A16", "s70"),
     ("llama2-7b", "W2A16", "s50"),
     ("llama3.1-8b", "W4A4", "s50"), ("llama3.1-8b", "W4A4", "s60"),
-    ("llama3.1-8b", "W4A4", "s70"), ("llama3.1-8b", "W4A4", "4to8p40-obs"),
+    ("llama3.1-8b", "W4A4", "s70"), ("llama3.1-8b", "W4A4", "4to8p-obs"),
     ("llama3.1-8b", "W4A16", "s50"), ("llama3.1-8b", "W4A16", "s70"),
     ("llama3.1-8b", "W2A16", "s50"),
     ("llama2-13b", "W4A4", "s50"), ("llama2-13b", "W4A4", "s60"),
-    ("llama2-13b", "W4A4", "s70"), ("llama2-13b", "W4A4", "4to8p40-obs"),
+    ("llama2-13b", "W4A4", "s70"), ("llama2-13b", "W4A4", "4to8p-obs"),
     ("llama2-13b", "W2A16", "s50"),
 ]
 
@@ -221,7 +221,7 @@ ROLE_SPEC = [
     ("llama2-7b", "W4A4", "s50"), ("llama2-7b", "W4A4", "4to8p-obs"),
     ("llama2-7b", "W2A16", "s50"), ("llama2-7b", "W4A4", "s60"),
     ("llama2-7b", "W4A4", "s70"),
-    ("llama3.1-8b", "W4A4", "s50"), ("llama3.1-8b", "W4A4", "4to8p40-obs"),
+    ("llama3.1-8b", "W4A4", "s50"), ("llama3.1-8b", "W4A4", "4to8p-obs"),
     ("llama3.1-8b", "W2A16", "s50"), ("llama3.1-8b", "W4A4", "s60"),
     ("llama3.1-8b", "W4A4", "s70"),
 ]

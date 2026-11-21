@@ -10,6 +10,14 @@ Unlike the minitest figures, this script reads ``results/v2/`` run records
     test and validation, for one model and compression setting.  This is the
     single-minimum curve of the alpha-sweep ablation (Table 4) as a figure.
 
+``delta-vs-obr`` (all models)
+    Test perplexity of the selected QDrift and of the pure asymmetric target
+    (1, 0), relative to OBR, for every row of the main table (Table 3).
+
+``localization`` (LLaMA-2-7B, W4A4KV4 70%)
+    Test-perplexity change against OBR when the pure asymmetric target is
+    applied to a subset of the layers only (Table 2 as a figure).
+
     python visualize/plots/mixture_grid.py --setting w4a4_s70 --model llama2-7b
 """
 
@@ -18,9 +26,14 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 
 import style as S
 from matplotlib.ticker import FormatStrFormatter, NullFormatter
+
+sys.path.insert(0, str(S.ROOT / "visualize" / "tables"))
+import paper_tables as P  # noqa: E402
+import tablekit as T  # noqa: E402
 
 RESULTS_V2 = S.ROOT / "results" / "v2"
 
@@ -218,6 +231,121 @@ def alpha_profiles() -> None:
 
 
 MODEL_TITLE = {"llama2-7b": "LLaMA-2-7B", "llama3.1-8b": "LLaMA-3.1-8B"}
+WORSE = "#e34948"
+
+
+def _sparsity_tick(pattern: str) -> str:
+    """``s70`` -> ``70%``; 4:8 patterns -> ``4:8p`` (every layer) / ``4:8m`` (mixed)."""
+    if pattern.startswith("4to8"):
+        return P._nm_label(pattern, "4:8p", "4:8m")
+    return f"{pattern[1:]}%"
+
+
+def delta_vs_obr() -> None:
+    """Selected QDrift and the pure target (1, 0) against OBR, every main-table row.
+
+    One panel per model on a shared log axis of test PPL / OBR; OBR is the line
+    at 1.  The filled circle is the validation-selected QDrift, labelled with its
+    test-perplexity change; the hollow triangle is the pure asymmetric target.
+    """
+    runs = T.load_runs()
+    models = list(dict.fromkeys(m for m, _, _ in P.MAIN_SPEC))
+    widths = [sum(m == model for m, _, _ in P.MAIN_SPEC) for model in models]
+    fig, axes = S.plt.subplots(
+        1, len(models), figsize=(6.9, 2.4), sharey=True, squeeze=False,
+        gridspec_kw={"width_ratios": widths},
+    )
+    for ax, model in zip(axes[0], models):
+        ticks, groups = [], {}
+        for x, (_, bits, pattern) in enumerate(
+            spec for spec in P.MAIN_SPEC if spec[0] == model
+        ):
+            ticks.append(_sparsity_tick(pattern))
+            groups.setdefault(bits, []).append(x)
+            tags = runs.get((model, bits, pattern, P.CALIB))
+            obr, pure, sel = T.select(tags) if tags else (None, None, None)
+            if obr is None:
+                continue
+            base = obr["ppl"]["wikitext2"]
+            if pure is not None:
+                ratio = pure["ppl"]["wikitext2"] / base
+                ax.plot(x, ratio, marker="^", markersize=5, linestyle="none",
+                        markerfacecolor="white", color=S.MUTED)
+            ratio = sel["ppl"]["wikitext2"] / base
+            ax.plot(x, ratio, marker="o", markersize=5, linestyle="none",
+                    color=S.COMP_COLOR["drift"])
+            ax.annotate(f"{100 * (ratio - 1):+.0f}%", (x, ratio),
+                        textcoords="offset points", xytext=(0, -10), ha="center",
+                        fontsize=6, color=S.INK_2)
+        ax.axhline(1.0, color=S.COMP_COLOR["obr"], linewidth=1.0)
+        ax.set_xticks(range(len(ticks)), ticks)
+        ax.set_xlim(-0.6, len(ticks) - 0.4)
+        ax.tick_params(axis="x", labelsize=6)
+        for label, xs in groups.items():
+            ax.annotate(label, ((xs[0] + xs[-1]) / 2, -0.17), xycoords=("data", "axes fraction"),
+                        ha="center", va="top", fontsize=6, color=S.INK_2)
+            ax.annotate("", (xs[0] - 0.3, -0.15), (xs[-1] + 0.3, -0.15),
+                        xycoords=("data", "axes fraction"),
+                        arrowprops={"arrowstyle": "-", "color": S.AXIS, "linewidth": 0.8})
+        S.panel_label(ax, P.MODEL_DISP[model])
+    ax = axes[0][0]
+    ax.set_yscale("log")
+    ax.set_ylim(0.25, 2.5)
+    ax.set_yticks([0.3, 0.5, 0.7, 1.0, 1.5, 2.0])
+    ax.yaxis.set_major_formatter(FormatStrFormatter("%g"))
+    ax.yaxis.set_minor_formatter(NullFormatter())
+    ax.set_ylabel("test PPL / OBR")
+    handles = [
+        S.plt.Line2D([], [], color=S.COMP_COLOR["obr"], label="OBR"),
+        S.plt.Line2D([], [], color=S.COMP_COLOR["drift"], marker="o", linestyle="none",
+                     label="QDrift (selected on validation)"),
+        S.plt.Line2D([], [], color=S.MUTED, marker="^", markerfacecolor="white",
+                     linestyle="none", label=r"pure asymmetric $(1,0)$"),
+    ]
+    fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.06),
+               ncol=3, frameon=False)
+    S.save(fig, "results__mixture_grid__all__delta-vs-obr")
+
+
+LOCALIZATION_ORDER = (
+    "blocks 0--3", "blocks 0--7", "blocks 0--11", "blocks 0--15", "all blocks",
+    "blocks 8--31", "attention only", "MLP gate/up-proj only", "MLP down-proj only",
+)
+
+
+def localization() -> None:
+    """Change of test PPL against OBR with the pure target on a subset of layers."""
+    tags = dict(P.LOCALIZATION_ROWS)
+    records = {}
+    for label in ("none (OBR)",) + LOCALIZATION_ORDER:
+        path = T.RESULTS_V2 / f"{P.LOCALIZATION_BASE}_{tags[label]}_seed42.json"
+        if path.exists():
+            records[label] = json.loads(path.read_text(encoding="utf-8"))
+    obr = records.get("none (OBR)")
+    labels = [label for label in LOCALIZATION_ORDER if label in records]
+    if obr is None or len(labels) < 3:
+        print("localization: the localized runs are missing, skipping")
+        return
+    deltas = [T.delta_vs_obr(records[label], obr) for label in labels]
+    fig, ax = S.plt.subplots(figsize=(3.4, 2.5))
+    ys = list(range(len(labels)))[::-1]
+    colors = [S.SERIES[0] if d < 0 else WORSE for d in deltas]
+    ax.barh(ys, deltas, color=colors, height=0.62)
+    for y, d in zip(ys, deltas):
+        ax.annotate(f"{d:+.0f}%", (d, y), textcoords="offset points",
+                    xytext=(3 if d >= 0 else -3, 0), ha="left" if d >= 0 else "right",
+                    va="center", fontsize=6, color=S.INK_2)
+    ax.axvline(0, color=S.INK_2, linewidth=0.8)
+    ax.set_xscale("symlog", linthresh=100)
+    ax.set_xlim(-150, 1e5)
+    ax.set_xticks([-100, -50, 0, 50, 100, 1000, 10000])
+    ax.set_xticklabels(["$-$100", "$-$50", "0", "50", "100", "10$^3$", "10$^4$"])
+    ax.set_yticks(ys, [label.replace("--", "–") for label in labels])
+    ax.tick_params(axis="y", labelsize=6.5)
+    ax.grid(axis="y", visible=False)
+    ax.set_xlabel("test PPL change vs. OBR (%)")
+    S.panel_label(ax, r"pure target $(1,0)$ on these layers, OBR elsewhere")
+    S.save(fig, "results__mixture_grid__llama2-7b__localization-w4a4-s70")
 
 
 def _pretty(setting: str) -> str:

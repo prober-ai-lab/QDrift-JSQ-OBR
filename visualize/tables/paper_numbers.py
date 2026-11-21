@@ -41,6 +41,10 @@ Keys are ``/``-separated; ``<m>`` is a model id (``llama2-7b``, ``llama3.1-8b``,
     drift/<comp>/removed-{min,max}                    Fig. 4 right: % of inj.+inh. removed, blocks >= 4
     drift/cancel/{min,max}                            Fig. 4 left: % linearly cancellable (OBR prefix),
                                                       per-layer-type block means, blocks >= 8
+    drift/held/<comp>/cancel-{cal,held}-{early,deep}  Sec. 3.2 held-out figure: % cancellable on
+                                                      calibration / held-out, blocks 0-7 / >= 8
+    drift/held/<comp>/removed-{cal,held,kept}         % removed on calibration / held-out, blocks
+                                                      >= 4, and held-out as % of calibration
     grids/b<bits>/{best-ratio,best-s,below,above}     Appendix C: mid-rise / mid-tread joint error
     regime/{dense,sparse,quant,joint}, mem/{fp16,w4a4,ratio,fp16-peak,w4a4-peak,peak-ratio}
     gemm/{prefill,decode}-{min,max}
@@ -303,6 +307,32 @@ def drift_numbers(n: Numbers) -> None:
             cancel[(row["type"], row["block"])].append(row["cancel"])
     means = [100 * sum(v) / len(v) for v in cancel.values()]
     n["drift/cancel/min"], n["drift/cancel/max"] = f"{min(means):.0f}", f"{max(means):.0f}"
+    heldout_numbers(n, record["rows"])
+
+
+def heldout_numbers(n: Numbers, rows: list[dict]) -> None:
+    """The held-out figure (Sec. 3.2), as heldout_figure computes it: block means over the
+    layers, then the mean over a block range, on calibration and on held-out tokens."""
+    def block_mean(comp: str, value, blocks) -> float:
+        per = defaultdict(list)
+        for row in rows:
+            v = value(row)
+            if row["comp"] == comp and row["block"] in blocks and not math.isnan(v):
+                per[row["block"]].append(v)
+        return 100 * sum(sum(v) / len(v) for v in per.values()) / len(per)
+
+    early, deep, removed = range(0, 8), range(8, 10**3), range(4, 10**3)
+    for comp in ("obr", "drift"):
+        key = f"drift/held/{comp}"
+        for split, prefix in (("cal", ""), ("held", "held_")):
+            for part, blocks in (("early", early), ("deep", deep)):
+                n[f"{key}/cancel-{split}-{part}"] = (
+                    f"{block_mean(comp, lambda r: r[f'{prefix}cancel'], blocks):.0f}")
+        cal, held = (block_mean(comp, lambda r, p=p: 1 - r[f"{p}total"]
+                                / (r[f"{p}injected"] + r[f"{p}inherited"]), removed)
+                     for p in ("", "held_"))
+        n[f"{key}/removed-cal"], n[f"{key}/removed-held"] = f"{cal:.1f}", f"{held:.1f}"
+        n[f"{key}/removed-kept"] = f"{100 * held / cal:.0f}"
 
 
 GRID_MINITEST = sorted((T.ROOT / "results" / "minitests").glob("grid_sparsity_crossover__*.json"))
