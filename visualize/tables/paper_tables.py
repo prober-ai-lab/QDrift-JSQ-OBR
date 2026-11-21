@@ -444,7 +444,7 @@ ZEROSHOT_TASKS = (("piqa", "PIQA"), ("hellaswag", "HellaS."), ("arc_easy", "ARC-
                   ("arc_challenge", "ARC-c"), ("winogrande", "Wino."),
                   ("lambada_openai", "LAMB."), ("avg", "Avg."))
 # Main text: the deployable layout and the two ends of the bit-width range.
-ZEROSHOT_MAIN = {("W4A4", "s50"), ("W4A4", "4to8p-obs"), ("W4A4", "4to8p40-obs"),
+ZEROSHOT_MAIN = {("W4A4", "s50"), ("W4A4", "4to8p-obs"),
                  ("W2A16", "s50")}
 
 
