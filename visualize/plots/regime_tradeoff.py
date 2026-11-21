@@ -51,10 +51,10 @@ def regimes() -> tuple[list[tuple[str, float, float]], dict[str, float]]:
         "w4a4_peak": eff["w4a4"]["memory"]["peak_allocated_bytes"],
     }
     rows = [
-        ("No\ncompression", ppl["dense"], mem["fp16"]),
-        ("Sparsify\nonly (50%)", SPARSE_ONLY_PPL, mem["fp16"]),
-        ("Quantize\nonly (W4A4)", ppl["quant"], mem["w4a4"]),
-        ("Sparsify +\nquantize", ppl["joint"], mem["w4a4"]),
+        ("Dense", ppl["dense"], mem["fp16"]),
+        ("Sparse\n50%", SPARSE_ONLY_PPL, mem["fp16"]),
+        ("W4A4", ppl["quant"], mem["w4a4"]),
+        ("Sparse\n+ W4A4", ppl["joint"], mem["w4a4"]),
     ]
     return rows, mem
 
@@ -67,35 +67,37 @@ def main() -> None:
     mem = [r[2] / 1e9 for r in rows]
     x = list(range(len(rows)))
 
-    # Two side-by-side panels (left-right), one paper column each.
-    fig, (axp, axm) = S.plt.subplots(1, 2, figsize=(6.6, 2.6))
+    # Two side-by-side panels sharing one paper column.
+    fig, (axp, axm) = S.plt.subplots(1, 2, figsize=(3.4, 1.9))
 
     # Panel A: perplexity (degradation).
     cppl = ["#8a8f98", "#8a8f98", "#d98c5f", "#c0504d"]
     axp.bar(x, ppl, color=cppl, width=0.64, zorder=3)
     for xi, v in zip(x, ppl):
-        axp.text(xi, v + 0.08, f"{v:.2f}", ha="center", va="bottom", fontsize=8)
+        axp.text(xi, v + 0.08, f"{v:.2f}", ha="center", va="bottom", fontsize=6)
     axp.axhline(ppl[0], ls="--", lw=0.9, color="#8a8f98", zorder=1)
-    axp.set_xticks(x, labels, fontsize=7)
-    axp.set_ylabel("WikiText-2 perplexity")
+    axp.set_xticks(x, labels, fontsize=5.5)
+    axp.set_ylabel("WikiText-2 perplexity", fontsize=6.5)
     axp.set_ylim(0, max(ppl) * 1.18)
-    axp.set_title("Quality degradation", fontsize=9)
+    axp.set_title("Quality", fontsize=7.5)
     axp.grid(axis="y", lw=0.4, alpha=0.4, zorder=0)
 
     # Panel B: weight memory (efficiency).
     cmem = ["#8a8f98", "#8a8f98", "#5b8c6e", "#5b8c6e"]
     axm.bar(x, mem, color=cmem, width=0.64, zorder=3)
     for xi, v in zip(x, mem):
-        axm.text(xi, v + 0.2, f"{v:.1f} GB", ha="center", va="bottom", fontsize=8)
-    axm.set_xticks(x, labels, fontsize=7)
-    axm.set_ylabel("Weight memory (GB)")
+        axm.text(xi, v + 0.2, f"{v:.1f}", ha="center", va="bottom", fontsize=6)
+    axm.set_xticks(x, labels, fontsize=5.5)
+    axm.set_ylabel("GB", fontsize=6.5)
     axm.set_ylim(0, max(mem) * 1.18)
-    axm.set_title("Efficiency (memory)", fontsize=9)
+    axm.set_title("Weight memory", fontsize=7.5)
     axm.grid(axis="y", lw=0.4, alpha=0.4, zorder=0)
-    axm.annotate(rf"${mem[0] / mem[2]:.1f}\times$", xy=(2, mem[2]), xytext=(2.1, 8.5), fontsize=9,
+    axm.annotate(rf"${mem[0] / mem[2]:.1f}\times$", xy=(2, mem[2]), xytext=(2.1, 8.5), fontsize=7,
                  color="#5b8c6e", ha="center")
 
-    fig.tight_layout()
+    for ax in (axp, axm):
+        ax.tick_params(axis="y", labelsize=5.5)
+    fig.tight_layout(w_pad=0.6)
     S.save(fig, f"results__regime_tradeoff__{MODEL}__ppl-and-memory")
 
 
