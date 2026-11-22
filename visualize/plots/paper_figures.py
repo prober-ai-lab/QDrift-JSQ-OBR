@@ -11,7 +11,7 @@ can be rebuilt with one command (the table counterpart is
     python visualize/plots/paper_figures.py --only drift
 
 Figure -> paper:
-    regime (Fig. 1) · drift (Figs. 2-4) · pipeline (Fig. 5)
+    regime (Fig. 1) · pipeline (Fig. 2) · drift (Figs. 3-4)
     · ppl_vs_sparsity (Fig. 7) · alpha_profiles (Sec. 5.3) · delta_vs_obr (Sec. 5.2)
     · localization (Sec. 3.3) · pairwise (Sec. 4.4) · feasible (App. B)
 """

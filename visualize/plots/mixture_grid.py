@@ -217,7 +217,7 @@ def delta_vs_obr() -> None:
     models = list(dict.fromkeys(m for m, _, _ in P.MAIN_SPEC))
     widths = [sum(m == model for m, _, _ in P.MAIN_SPEC) for model in models]
     fig, axes = S.plt.subplots(
-        1, len(models), figsize=(6.9, 2.4), sharey=True, squeeze=False,
+        1, len(models), figsize=(7.7, 2.0), sharey=True, squeeze=False,
         gridspec_kw={"width_ratios": widths},
     )
     for ax, model in zip(axes[0], models):
@@ -261,7 +261,7 @@ def delta_vs_obr() -> None:
         S.panel_label(ax, P.MODEL_DISP[model])
     ax = axes[0][0]
     ax.set_yscale("log")
-    ax.set_ylim(0.25, 2.5)
+    ax.set_ylim(0.21, 2.5)
     ax.set_yticks([0.3, 0.5, 0.7, 1.0, 1.5, 2.0])
     ax.yaxis.set_major_formatter(FormatStrFormatter("%g"))
     ax.yaxis.set_minor_formatter(NullFormatter())
