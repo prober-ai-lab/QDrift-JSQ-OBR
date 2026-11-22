@@ -1,6 +1,6 @@
 <div align="center">
 
-# QDrift
+# QDrift-JSQ-OBR
 
 **A constrained mixture of reconstruction targets for joint sparsification and low-bit quantization of LLMs**
 
