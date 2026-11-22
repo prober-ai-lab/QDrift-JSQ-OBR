@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 
@@ -221,6 +222,7 @@ def delta_vs_obr() -> None:
     )
     for ax, model in zip(axes[0], models):
         ticks, groups = [], {}
+        prev = None  # (ratio, staggered) of the left neighbour's label
         for x, (_, bits, pattern) in enumerate(
             spec for spec in P.MAIN_SPEC if spec[0] == model
         ):
@@ -238,9 +240,14 @@ def delta_vs_obr() -> None:
             ratio = sel["ppl"]["wikitext2"] / base
             ax.plot(x, ratio, marker="o", markersize=5, linestyle="none",
                     color=S.COMP_COLOR["drift"])
+            # Two labels at about the same height would run into each other:
+            # drop the right one below its neighbour.
+            stagger = (prev is not None and not prev[1]
+                       and abs(math.log(ratio / prev[0])) < 0.06)
             ax.annotate(f"{100 * (ratio - 1):+.0f}%", (x, ratio),
-                        textcoords="offset points", xytext=(0, -10), ha="center",
-                        fontsize=6, color=S.INK_2)
+                        textcoords="offset points", xytext=(0, -17 if stagger else -10),
+                        ha="center", fontsize=6, color=S.INK_2)
+            prev = (ratio, stagger)
         ax.axhline(1.0, color=S.COMP_COLOR["obr"], linewidth=1.0)
         ax.set_xticks(range(len(ticks)), ticks)
         ax.set_xlim(-0.6, len(ticks) - 0.4)

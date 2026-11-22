@@ -8,8 +8,8 @@
     support keeps, sum over the block's layers.  Right: the held-out optimal
     step along the feasible correction, one step shared by the block's layers
     (the ratio of the summed numerators and denominators of Eq. heldstep);
-    the calibration optimum is 1.  One curve per support; the dotted tick on
-    the right is the alpha that validation selects for that setting (Table 3).
+    the calibration optimum is 1.  One curve per support; the dotted line is
+    the alpha that validation selects (Table 3; one line per distinct value).
 
     python visualize/plots/feasible_correction.py
 """
@@ -58,7 +58,7 @@ def selected_alpha(model: str, pattern: str) -> float | None:
 
 def feasible_figure(model: str) -> None:
     fig, axes = S.plt.subplots(1, 2, figsize=(6.6, 2.3))
-    drawn = 0
+    drawn, alphas = 0, set()
     for tag, label, color, pattern in SUPPORTS:
         paths = sorted(S.RESULTS.glob(f"{STEM}__{model}__*_{tag}__obr-prefix.json"))
         if not paths:
@@ -70,7 +70,7 @@ def feasible_figure(model: str) -> None:
         axes[1].plot(blocks, steps, color=color, label=label)
         alpha = selected_alpha(model, pattern)
         if alpha is not None:
-            axes[1].axhline(alpha, color=color, linestyle=":", linewidth=1.0)
+            alphas.add(alpha)
         drawn += 1
     if not drawn:
         raise SystemExit(f"no {STEM} results for {model} under {S.RESULTS}")
@@ -78,6 +78,13 @@ def feasible_figure(model: str) -> None:
     axes[0].set_ylim(0, 1)
     S.panel_label(axes[0], "(a) feasible fraction")
     axes[1].axhline(1.0, color=S.INK_2, linewidth=0.8)
+    # The validation-selected alpha (one line per distinct value; on LLaMA-2-7B every
+    # support selects the same 0.25).
+    for alpha in sorted(alphas):
+        axes[1].axhline(alpha, color=S.INK_2, linestyle=":", linewidth=1.0)
+        axes[1].annotate(rf"selected $\alpha={alpha:g}$", (0.02, alpha),
+                         xycoords=("axes fraction", "data"), xytext=(0, 3),
+                         textcoords="offset points", fontsize=6, color=S.INK_2)
     axes[1].set_ylabel(r"held-out optimal step $\alpha^h$")
     S.panel_label(axes[1], "(b) held-out step (calibration: 1)")
     axes[1].legend(loc="upper left", bbox_to_anchor=(1.0, 1.0))

@@ -374,6 +374,52 @@ def efficiency_numbers(n: Numbers) -> None:
         n[f"gemm/{phase}-min"], n[f"gemm/{phase}-max"] = f"{min(speedups):.2f}", f"{max(speedups):.2f}"
 
 
+FEASIBLE_SUPPORTS = (
+    ("u0.5_sparsegpt", "s50"), ("u0.6_sparsegpt", "s60"), ("u0.7_sparsegpt", "s70"),
+    ("4to8p-obs", "4to8p"),
+)
+
+
+def feasible_numbers(n: Numbers) -> None:
+    """Appendix B (feasible_correction minitest, LLaMA-2-7B, OBR prefix), as
+    visualize/plots/feasible_correction.py draws it: per block, the ratio of the summed
+    numerator to the summed denominator; then the mean over blocks."""
+    rho_all, held_all, below = [], [], []
+    for tag, key in FEASIBLE_SUPPORTS:
+        paths = sorted((T.ROOT / "results" / "minitests").glob(
+            f"feasible_correction__llama2-7b__*_{tag}__obr-prefix.json"))
+        if not paths:
+            continue
+        rows = json.loads(paths[-1].read_text(encoding="utf-8"))["rows"]
+        sums = defaultdict(lambda: [0.0, 0.0, 0.0, 0.0])
+        for r in rows:
+            acc = sums[r["block"]]
+            acc[0] += r["feasible"]
+            acc[1] += r["dense"]
+            acc[2] += r["held_num"]
+            acc[3] += r["held_den"]
+        blocks = sorted(sums)
+        rho = [sums[b][0] / sums[b][1] for b in blocks]
+        held = [sums[b][2] / sums[b][3] for b in blocks]
+        half = len(blocks) // 2
+        mean = lambda v: sum(v) / len(v)  # noqa: E731
+        n[f"feasible/{key}/rho"] = f"{mean(rho):.2f}"
+        n[f"feasible/{key}/held"] = f"{mean(held):.2f}"
+        n[f"feasible/{key}/held-early"] = f"{mean(held[:half]):.2f}"
+        n[f"feasible/{key}/held-deep"] = f"{mean(held[half:]):.2f}"
+        layers = [r["held_num"] / r["held_den"] for r in rows if r["held_den"] > 0]
+        n[f"feasible/{key}/held-below"] = str(sum(v < 1 for v in layers))
+        rho_all.append(mean(rho))
+        held_all.append(mean(held))
+        below.append(sum(v < 1 for v in layers))
+    if rho_all:
+        n["feasible/rho-min"], n["feasible/rho-max"] = f"{min(rho_all):.2f}", f"{max(rho_all):.2f}"
+        n["feasible/held-min"], n["feasible/held-max"] = (
+            f"{min(held_all):.2f}", f"{max(held_all):.2f}")
+        n["feasible/held-below-min"] = str(min(below))
+        n["feasible/layers"] = str(len(layers))
+
+
 def collect() -> Numbers:
     runs = T.load_runs()
     n = Numbers()
@@ -384,6 +430,7 @@ def collect() -> Numbers:
     ablation_numbers(n, runs)
     drift_numbers(n)
     grid_numbers(n)
+    feasible_numbers(n)
     efficiency_numbers(n)
     return n
 
