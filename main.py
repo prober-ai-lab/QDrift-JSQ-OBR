@@ -86,6 +86,7 @@ def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--mix-clean", type=float, default=0.0, help="drift: weight gamma of the clean-input target E||W_hat X - W X||^2; the symmetric target gets 1 - alpha - gamma (0, 0 = OBR)")
     parser.add_argument("--mix-blocks", type=_block_range, default=None, help="drift: apply the mixture only to decoder blocks FIRST-LAST (inclusive); OBR (0, 0) elsewhere. Localization ablation")
     parser.add_argument("--mix-modules", choices=("all", "attn", "mlp_in", "mlp_out"), default="all", help="drift: apply the mixture only to attn (q/k/v/o), mlp_in (gate/up) or mlp_out (down); OBR (0, 0) elsewhere")
+    parser.add_argument("--mix-rule", choices=("fixed", "auto"), default="fixed", help="drift: fixed = the global --mix-asym/--mix-clean; auto = derive each layer group's (alpha, gamma) from its calibration statistics (docs/mix-auto.md)")
     parser.add_argument("--rotation", choices=("hadamard", "none"), default="hadamard", help="hadamard=fast global Hadamard; none=identity")
     parser.add_argument("--nsamples", type=int, default=128)
     parser.add_argument("--seqlen", type=int, default=2048)
@@ -170,6 +171,7 @@ def _build_recipe(args: argparse.Namespace) -> CompressionRecipe:
             mix_clean=args.mix_clean,
             mix_blocks=args.mix_blocks,
             mix_modules=args.mix_modules,
+            mix_rule=args.mix_rule,
         ),
         nsamples=args.nsamples,
         seqlen=args.seqlen,

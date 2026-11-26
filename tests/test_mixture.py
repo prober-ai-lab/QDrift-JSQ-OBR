@@ -199,3 +199,80 @@ def test_localized_mixture_layers(monkeypatch) -> None:
     local = _layer_recipe(CompensationSpec(method="drift", mix_blocks=(0, 3)))
     assert torch.equal(P._process_full_layer(local, qparams, inside, weight, x, z, "cpu", True).new_weight, glob.new_weight)
     assert torch.equal(P._process_full_layer(local, qparams, outside, weight, x, z, "cpu", True).new_weight, obr.new_weight)
+
+
+def test_auto_rule_names_and_validation() -> None:
+    comp = CompensationSpec(method="drift", mix_rule="auto")
+    recipe = CompressionRecipe(compensation=comp)
+    recipe.validate()
+    assert run_name(recipe).endswith("_qdrift-auto_seed42")
+    assert CompensationSpec.from_dict(comp.to_dict()) == comp
+    assert "mix_rule" not in CompensationSpec(method="drift").to_dict()
+    with pytest.raises(ValueError):
+        comp.mix_for("model.layers.0.self_attn.q_proj")
+    table = replace_table(comp, (("l", 0.3, 0.1),))
+    assert table.mix_for("l") == (0.3, 0.1)
+    for bad in (
+        CompensationSpec(method="obr", mix_rule="auto"),
+        CompensationSpec(method="drift", mix_rule="auto", mix_asym=0.25),
+        CompensationSpec(method="drift", mix_rule="auto", mix_blocks=(0, 3)),
+        CompensationSpec(method="drift", mix_rule="nope"),
+    ):
+        with pytest.raises(ValueError):
+            bad.validate()
+
+
+def replace_table(comp, rows):
+    from dataclasses import replace
+
+    return replace(comp, mix_table=rows)
+
+
+def test_trust_region_and_shrinkage() -> None:
+    from qdrift.obr.drift import auto_mixture, ledoit_wolf_intensity, trust_region_weight
+
+    assert trust_region_weight(0.0, 1.0) == 1.0
+    assert trust_region_weight(3.0, 1.0) == pytest.approx(0.5)
+    alpha = trust_region_weight(0.45, 0.03)
+    assert alpha ** 2 * 0.45 == pytest.approx((1 - alpha ** 2) * 0.03)
+    x, z = _inputs(rows=4096, cols=16, seed=3)
+    h_hat = z.t() @ z / z.shape[0]
+    half = z[:2048].t() @ z[:2048] / 2048
+    h_fp = x.t() @ x / x.shape[0]
+    lw = ledoit_wolf_intensity(h_hat, half, h_fp)
+    assert 0.0 < lw < 1.0
+    # More drift (a larger H_Xhat - H_X) shrinks less.
+    assert ledoit_wolf_intensity(h_hat, half, 0.5 * h_fp) < lw
+    assert ledoit_wolf_intensity(h_hat, half, h_hat) == 1.0
+    a, g = auto_mixture(0.4, 0.25)
+    assert (a, g) == (0.4, pytest.approx(0.15)) and 1 - a - g > 0
+
+
+def test_auto_mix_group(monkeypatch) -> None:
+    """The derived mixture is interior and matches the closed forms."""
+    monkeypatch.setattr(P.torch.cuda, "set_device", lambda device: None)
+    x, z = _inputs(rows=512, cols=64, seed=11)
+    generator = torch.Generator().manual_seed(2)
+
+    class _Layer:
+        def __init__(self, rows):
+            self.weight = type("W", (), {"data": torch.randn(rows, 64, generator=generator)})()
+
+    layers = {"a": _Layer(16), "b": _Layer(8)}
+    recipe = _layer_recipe(CompensationSpec(method="drift", mix_rule="auto"))
+    qparams = qrange(4, "midtread")
+    (alpha, gamma), info = P._auto_mix(recipe, qparams, ["a", "b"], layers, x, z, "cpu")
+    assert 0.0 < alpha < 1.0 and 0.0 < gamma and alpha + gamma < 1.0
+    h = z.t() @ z / z.shape[0]
+    d = (z - x).t() @ z / z.shape[0]
+    system = P._damped(h, recipe.compensation.damping)
+    expected = sum(
+        float(torch.trace(layers[n].weight.data @ d @ torch.linalg.solve(system, d.t() @ layers[n].weight.data.t())))
+        for n in ("a", "b")
+    )
+    assert info["cancellable"] == pytest.approx(expected, rel=1e-4)
+    assert alpha ** 2 * info["cancellable"] == pytest.approx((1 - alpha ** 2) * info["error"], rel=1e-6)
+    # The reference is OBR's own layer.
+    obr = P._process_full_layer(_layer_recipe(CompensationSpec(method="obr")), qparams, "a", layers["a"].weight.data, z, None, "cpu", True)
+    delta = obr.new_weight.float() - layers["a"].weight.data
+    assert float(((delta @ h) * delta).sum()) < info["error"]

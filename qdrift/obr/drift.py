@@ -22,9 +22,17 @@ through different floating-point arithmetic).  ``alpha = gamma = 0`` is OBR;
 
 from __future__ import annotations
 
+import math
+
 import torch
 
-__all__ = ["drift_weight", "mixture_hessians"]
+__all__ = [
+    "auto_mixture",
+    "drift_weight",
+    "ledoit_wolf_intensity",
+    "mixture_hessians",
+    "trust_region_weight",
+]
 
 
 def drift_weight(weight: torch.Tensor, hessian_diff: torch.Tensor) -> torch.Tensor:
@@ -52,3 +60,44 @@ def mixture_hessians(
     if hessian_diff is None:
         raise ValueError("the asymmetric term needs the drift matrix")
     return hessian, mix_asym * hessian_diff
+
+
+def trust_region_weight(cancellable: float, error: float) -> float:
+    """alpha with ``alpha^2 s = (1 - alpha^2) eps``: the drift correction may
+    move the layer output by no more than the compression error the layer
+    already injects (docs/mix-auto.md).  ``s`` is the in-sample cancellable
+    drift ``tr(W D H^-1 D^T W^T)``, ``eps`` the OBR solution's error
+    ``tr(E H E^T)``; no drift (``s = 0``) gives 1, ``s >> eps`` gives
+    ``sqrt(eps / s)``."""
+    if cancellable <= 0.0:
+        return 1.0
+    if error <= 0.0:
+        return 0.0
+    return math.sqrt(error / (cancellable + error))
+
+
+def ledoit_wolf_intensity(
+    hessian_hat: torch.Tensor,
+    hessian_half: torch.Tensor,
+    hessian_fp: torch.Tensor,
+) -> float:
+    """Ledoit-Wolf intensity of shrinking ``H_Xhat`` toward ``H_X``:
+    ``pi / (pi + b)`` with ``pi`` the sampling variance of ``H_Xhat`` and
+    ``b = ||H_Xhat - H_X||_F^2`` the (plug-in) squared bias of the target.
+    ``pi`` comes from two equal halves of the calibration set
+    (``hessian_half`` is the first half's; the second is ``2 H_Xhat - first``,
+    so ``pi = ||H_half - H_Xhat||_F^2``).  It lies in (0, 1) unless
+    ``H_Xhat = H_X`` exactly (no drift: every target coincides), where it is 1."""
+    variance = float((hessian_half - hessian_hat).square().sum())
+    bias = float((hessian_hat - hessian_fp).square().sum())
+    if variance + bias <= 0.0:
+        return 1.0
+    return variance / (variance + bias)
+
+
+def auto_mixture(alpha: float, intensity: float) -> tuple[float, float]:
+    """``(alpha, gamma)`` of the derived mixture: the asymmetric target gets the
+    trust-region weight, and the remaining ``1 - alpha`` (the two targets
+    that are not drift corrections) is split between the clean and symmetric
+    targets by the Ledoit-Wolf intensity."""
+    return alpha, (1.0 - alpha) * intensity

@@ -315,6 +315,8 @@ MIX_MODULES = {
     "mlp_in": ("mlp.gate_proj", "mlp.up_proj"),
     "mlp_out": ("mlp.down_proj",),
 }
+# Mixture-weight rules (``CompensationSpec.mix_rule``).
+MIX_RULES = ("fixed", "auto")
 _BLOCK_RE = re.compile(r"layers\.(\d+)\.")
 
 
@@ -339,6 +341,13 @@ class CompensationSpec:
     (``attn`` = q/k/v/o, ``mlp_in`` = gate/up, ``mlp_out`` = down) restrict the
     mixture to a subset of layers; every other layer gets ``(0, 0)``, i.e. OBR.
     This is the localization ablation; the defaults apply it everywhere.
+
+    ``mix_rule`` ``auto`` derives each layer group's ``(alpha, gamma)`` from
+    its own calibration statistics during compression (docs/mix-auto.md):
+    alpha by the trust region ``alpha^2 s = (1 - alpha^2) eps`` and gamma by
+    Ledoit-Wolf shrinkage of ``H_Xhat`` toward ``H_X`` on the remaining ``1 - alpha``.  ``mix_asym`` /
+    ``mix_clean`` are then ignored; ``mix_table`` holds the derived
+    ``(name, alpha, gamma)`` rows and is filled by the pipeline, never by hand.
     """
 
     method: str = "obr"
@@ -348,6 +357,8 @@ class CompensationSpec:
     mix_clean: float = 0.0
     mix_blocks: tuple[int, int] | None = None
     mix_modules: str = "all"
+    mix_rule: str = "fixed"
+    mix_table: tuple[tuple[str, float, float], ...] = ()
 
     def validate(self) -> None:
         if self.method not in ("none", "obr", "drift"):
@@ -366,6 +377,13 @@ class CompensationSpec:
             raise ValueError("mix_blocks needs 0 <= first <= last")
         if self.method != "drift" and not self.is_global_mix():
             raise ValueError("mix_blocks / mix_modules need --comp drift")
+        if self.mix_rule not in MIX_RULES:
+            raise ValueError(f"mix_rule must be one of {MIX_RULES}")
+        if self.mix_rule != "fixed":
+            if self.method != "drift":
+                raise ValueError("--mix-rule auto needs --comp drift")
+            if not (self.is_default_mix() and self.is_global_mix()):
+                raise ValueError("--mix-rule auto derives the weights; do not set --mix-asym/--mix-clean/--mix-blocks/--mix-modules")
 
     def is_default_mix(self) -> bool:
         """The default weights (``alpha = 1, gamma = 0``)."""
@@ -378,6 +396,11 @@ class CompensationSpec:
     def mix_for(self, name: str | None) -> tuple[float, float]:
         """``(alpha, gamma)`` of layer ``name``: the mixture inside the scope,
         OBR's ``(0, 0)`` outside it."""
+        for row in self.mix_table:
+            if row[0] == name:
+                return (row[1], row[2])
+        if self.mix_rule != "fixed":
+            raise ValueError(f"no derived mixture for layer {name}")
         mix = (self.mix_asym, self.mix_clean)
         if self.is_global_mix():
             return mix
@@ -401,6 +424,8 @@ class CompensationSpec:
         ``-L{first}-{last}`` / ``-M{modules}`` for a localized mixture."""
         if self.method != "drift":
             return ""
+        if self.mix_rule != "fixed":
+            return f"-{self.mix_rule}"
         tag = "" if self.is_default_mix() else f"-a{self.mix_asym:g}c{self.mix_clean:g}"
         if self.mix_blocks is not None:
             tag += f"-L{self.mix_blocks[0]}-{self.mix_blocks[1]}"
@@ -427,6 +452,8 @@ class CompensationSpec:
             data["mix_blocks"] = list(self.mix_blocks)
         if self.mix_modules != "all":
             data["mix_modules"] = self.mix_modules
+        if self.mix_rule != "fixed":
+            data["mix_rule"] = self.mix_rule
         return data
 
     @classmethod
@@ -443,6 +470,7 @@ class CompensationSpec:
                 else None
             ),
             mix_modules=str(data.get("mix_modules", "all")),
+            mix_rule=str(data.get("mix_rule", "fixed")),
         )
 
 
@@ -663,7 +691,7 @@ def fp16_recipe(
         prune=replace(recipe.prune, sparsity=sparsity, structure=structure),
         compensation=replace(
             recipe.compensation, method="none", mix_asym=1.0, mix_clean=0.0,
-            mix_blocks=None, mix_modules="all"
+            mix_blocks=None, mix_modules="all", mix_rule="fixed", mix_table=()
         ),
         pairwise_fraction=0.0,
         pairwise_layers=(),
@@ -690,7 +718,7 @@ def sparse_recipe(recipe: CompressionRecipe) -> CompressionRecipe:
         sparse,
         compensation=replace(
             recipe.compensation, method="obr", mix_asym=1.0, mix_clean=0.0,
-            mix_blocks=None, mix_modules="all"
+            mix_blocks=None, mix_modules="all", mix_rule="fixed", mix_table=()
         ),
     )
 

@@ -49,7 +49,13 @@ from qdrift.obr.calibrate import (
     capture_inputs,
     layer_groups,
 )
-from qdrift.obr.drift import drift_weight, mixture_hessians
+from qdrift.obr.drift import (
+    auto_mixture,
+    drift_weight,
+    ledoit_wolf_intensity,
+    mixture_hessians,
+    trust_region_weight,
+)
 from qdrift.obr.obr import compensate_pruning_error, split_mask
 from qdrift.prune.criteria import (
     hessian_inverse_diag,
@@ -97,7 +103,101 @@ def _mix(recipe: CompressionRecipe, names: str | list[str] | None) -> tuple[floa
 def _dual_path(recipe: CompressionRecipe) -> bool:
     """QDrift needs the full-precision stream unless its mixture is OBR's."""
     comp = recipe.compensation
-    return comp.method == "drift" and (comp.mix_asym > 0.0 or comp.mix_clean > 0.0)
+    return comp.method == "drift" and (
+        comp.mix_rule != "fixed" or comp.mix_asym > 0.0 or comp.mix_clean > 0.0
+    )
+
+
+@torch.no_grad()
+def _auto_moments(
+    fp_input: torch.Tensor,
+    compressed_input: torch.Tensor,
+    device: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """``H_Xhat``, the first calibration half's ``H_Xhat``, ``H_X`` and
+    ``D = E[(x_hat - x) x_hat^T]`` (pipeline layout: rows are tokens, in
+    sequence order, so the halves split the calibration sequences)."""
+    total = int(fp_input.shape[0])
+    width = int(fp_input.shape[-1])
+    half_rows = total // 2
+    hessian = torch.zeros(width, width, device=device, dtype=torch.float32)
+    half = torch.zeros_like(hessian)
+    hessian_fp = torch.zeros_like(hessian)
+    diff = torch.zeros_like(hessian)
+    bounds = sorted({0, half_rows, total} | set(range(0, total, _HESSIAN_STREAM_ROWS)))
+    for start, end in zip(bounds[:-1], bounds[1:]):
+        zhat = compressed_input[start:end].to(device=device, dtype=torch.float32)
+        zfp = fp_input[start:end].to(device=device, dtype=torch.float32)
+        block = zhat.t() @ zhat
+        hessian.add_(block)
+        if end <= half_rows:
+            half.add_(block)
+        hessian_fp.add_(zfp.t() @ zfp)
+        diff.add_((zhat - zfp).t() @ zhat)
+        del zhat, zfp, block
+    hessian.div_(max(total, 1))
+    half.div_(max(half_rows, 1))
+    hessian_fp.div_(max(total, 1))
+    diff.div_(max(total, 1))
+    return hessian, half, hessian_fp, diff
+
+
+@torch.no_grad()
+def _auto_mix(
+    recipe: CompressionRecipe,
+    qparams: tuple[int, int, float],
+    names: list[str],
+    layers: dict,
+    fp_input: torch.Tensor,
+    compressed_input: torch.Tensor,
+    device: str,
+) -> tuple[tuple[float, float], dict[str, float]]:
+    """Derive one layer group's mixture ``(alpha, gamma)`` (docs/mix-auto.md).
+
+    alpha: trust region ``alpha^2 s = (1 - alpha^2) eps`` with ``s`` the
+    group's in-sample cancellable drift ``sum tr(W D H^-1 D^T W^T)`` and
+    ``eps`` the error ``sum tr(E H E^T)`` of OBR's solution (one reference
+    solve of each layer with ``(0, 0)``); gamma: the Ledoit-Wolf intensity of
+    shrinking ``H_Xhat`` toward ``H_X``, applied to the remaining ``1 - alpha``.
+    """
+    comp = recipe.compensation
+    hessian, half, hessian_fp, diff = _auto_moments(fp_input, compressed_input, device)
+    intensity = ledoit_wolf_intensity(hessian, half, hessian_fp)
+    del half, hessian_fp
+    factor = torch.linalg.cholesky(_damped(hessian, comp.damping))
+    reference = replace(
+        recipe,
+        compensation=replace(
+            comp, mix_table=tuple((name, 0.0, 0.0) for name in names)
+        ),
+    )
+    cancellable = 0.0
+    error = 0.0
+    for name in names:
+        weight = layers[name].weight.data
+        solved = _process_full_layer(
+            reference, qparams, name, weight, fp_input, compressed_input, device, True
+        )
+        dense = weight.detach().to(device=device, dtype=torch.float32)
+        delta = solved.new_weight.to(device=device, dtype=torch.float32) - dense
+        error += float(((delta @ hessian) * delta).sum())
+        projected = dense @ diff
+        cancellable += float(
+            (projected.t() * torch.cholesky_solve(projected.t(), factor)).sum()
+        )
+        del solved, dense, delta, projected
+    alpha = trust_region_weight(cancellable, error)
+    mix = auto_mixture(alpha, intensity)
+    del hessian, diff, factor
+    torch.cuda.empty_cache()
+    return mix, {
+        "alpha": mix[0],
+        "beta": 1.0 - mix[0] - mix[1],
+        "gamma": mix[1],
+        "cancellable": cancellable,
+        "error": error,
+        "intensity": intensity,
+    }
 
 
 def _damped(hessian: torch.Tensor, damping: float) -> torch.Tensor:
@@ -838,6 +938,7 @@ def compress(
         else f"signed_int{recipe.weight.bits}"
     )
 
+    auto_meta: dict[str, dict[str, float]] = {}
     for group in groups:
         fp_input = None
         compressed_input = None
@@ -858,6 +959,26 @@ def compress(
 
         results: list[LayerResult] = []
         names = list(group.names)
+        if recipe.compensation.mix_rule != "fixed":
+            mix, info = _auto_mix(
+                recipe, qparams, names, layers, fp_input, compressed_input, main_device
+            )
+            comp = recipe.compensation
+            recipe = replace(
+                recipe,
+                compensation=replace(
+                    comp,
+                    mix_table=comp.mix_table + tuple((n, mix[0], mix[1]) for n in names),
+                ),
+            )
+            auto_meta.update({n: info for n in names})
+            print(
+                f"mix-auto {','.join(names)} alpha={info['alpha']:.4f} "
+                f"beta={info['beta']:.4f} gamma={info['gamma']:.4f} "
+                f"s={info['cancellable']:.4g} eps={info['error']:.4g} "
+                f"lw={info['intensity']:.4f}",
+                flush=True,
+            )
         if (
             pool.size > 1
             and len(names) > 1
@@ -1136,6 +1257,8 @@ def compress(
         "value_layout": value_layout,
         "scale_layout": scale_layout,
     }
+    for name, info in auto_meta.items():
+        layer_meta[name]["mix"] = info
     config["layers"] = layer_meta
     if run is not None:
         config["run"] = run_metadata(recipe, layer_meta)
