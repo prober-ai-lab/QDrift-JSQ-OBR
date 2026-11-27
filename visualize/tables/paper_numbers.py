@@ -52,6 +52,8 @@ Keys are ``/``-separated; ``<m>`` is a model id (``llama2-7b``, ``llama3.1-8b``,
     grids/b<bits>/{best-ratio,best-s,below,above}     Appendix C: mid-rise / mid-tread joint error
     regime/{dense,sparse,quant,joint}, mem/{fp16,w4a4,ratio,fp16-peak,w4a4-peak,peak-ratio}
     gemm/{prefill,decode}-{min,max}
+    deploy/<m>/<fmt>/{weights,peak,prefill,decode,thr16}   deployment format (GB, ms, tokens/s)
+    deploy/<m>/<fmt>/{mem-ratio,prefill-speedup,decode-speedup,thr16-speedup}  against FP16
 
 Signed values carry ``\\ensuremath{-}`` / ``\\ensuremath{+}`` so they work in text and
 math; no value contains ``\\%``.
@@ -406,6 +408,26 @@ def efficiency_numbers(n: Numbers) -> None:
     n["mem/fp16-peak"] = f"{mem['fp16_peak'] / 1e9:.1f}"
     n["mem/w4a4-peak"] = f"{mem['w4a4_peak'] / 1e9:.1f}"
     n["mem/peak-ratio"] = f"{mem['fp16_peak'] / mem['w4a4_peak']:.1f}"
+    for model in P.MODEL_DISP:
+        base1, base16 = P.load_format(model, "fp16", 1), P.load_format(model, "fp16", 16)
+        for fmt, _ in P.FORMATS:
+            r1, r16 = P.load_format(model, fmt, 1), P.load_format(model, fmt, 16)
+            if r1 is None:
+                continue
+            key = f"deploy/{model}/{fmt}"
+            n[f"{key}/weights"] = f"{r1['memory']['weight_bytes'] / 1e9:.1f}"
+            n[f"{key}/peak"] = f"{r1['memory']['peak_allocated_bytes'] / 1e9:.1f}"
+            n[f"{key}/prefill"] = f"{r1['prefill']['p50_ms']:.0f}"
+            n[f"{key}/decode"] = f"{r1['decode']['ms_per_token']:.1f}"
+            if r16 is not None:
+                n[f"{key}/thr16"] = f"{r16['decode']['tokens_per_s']:.0f}"
+            if base1 is not None and fmt != "fp16":
+                n[f"{key}/mem-ratio"] = f"{base1['memory']['weight_bytes'] / r1['memory']['weight_bytes']:.1f}"
+                n[f"{key}/prefill-speedup"] = f"{base1['prefill']['p50_ms'] / r1['prefill']['p50_ms']:.2f}"
+                n[f"{key}/decode-speedup"] = f"{base1['decode']['ms_per_token'] / r1['decode']['ms_per_token']:.2f}"
+                if r16 is not None and base16 is not None:
+                    n[f"{key}/thr16-speedup"] = (
+                        f"{r16['decode']['tokens_per_s'] / base16['decode']['tokens_per_s']:.2f}")
     for phase in ("prefill", "decode"):
         speedups = [row[phase][2] for row in P.GEMM_US]
         n[f"gemm/{phase}-min"], n[f"gemm/{phase}-max"] = f"{min(speedups):.2f}", f"{max(speedups):.2f}"

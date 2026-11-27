@@ -14,7 +14,7 @@ Figure -> paper:
     regime (Fig. 1) · pipeline (Fig. 2) · drift (Figs. 3-4)
     · ppl_vs_sparsity (Fig. 7) · alpha_profiles (Sec. 5.3) · delta_vs_obr (Sec. 5.2)
     · localization (Sec. 3.3) · pairwise (Sec. 4.4) · feasible (App. B)
-    · derived_depth (derived per-layer mixture vs depth)
+    · derived_depth (derived per-layer mixture vs depth) · deploy (deployment formats)
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ import mixture_grid as grid  # noqa: E402
 import pairwise_layout as pairwise  # noqa: E402
 import qdrift_pipeline as pipeline  # noqa: E402
 import regime_tradeoff as regime  # noqa: E402
+import deploy_formats as deploy  # noqa: E402
 
 
 def build_drift() -> None:
@@ -60,6 +61,7 @@ BUILDERS = {
     "alpha_profiles": grid.alpha_profiles,
     "delta_vs_obr": grid.delta_vs_obr,
     "derived_depth": grid.derived_mixture_vs_depth,
+    "deploy": deploy.main,
     "localization": grid.localization,
     "feasible": lambda: feasible.feasible_figure("llama2-7b"),
 }

@@ -19,7 +19,7 @@ gamma) grid is run on LLaMA-2-7B only, where ``grid_vs_derived``, ``alpha_sweep`
 
 Name -> paper table:
     main_results · grid_vs_derived · seed_robustness · alpha_sweep · mask_selection
-    · gemm_efficiency · alpha_gamma_grid · compression_time · asymmetric_overfit
+    · gemm_efficiency · deploy_efficiency · alpha_gamma_grid · compression_time · asymmetric_overfit
     · localization · zeroshot · zeroshot_full · target_roles
 """
 
@@ -386,6 +386,56 @@ GEMM_US = [
 ]
 
 
+# Deployment formats (benchmark/inference/formats.py records); OBR and QDrift share
+# each format, so it is measured once per model.
+FORMATS = (("fp16", "FP16"), ("w4a16-s50", "W4A16"), ("w4a4-s50", "W4A4KV4"),
+           ("w4a4-4to8p", "W4A4KV4 pairwise 4:8"))
+BENCH = T.ROOT / "results" / "benchmarks"
+
+
+def load_format(model: str, fmt: str, batch: int) -> dict | None:
+    path = BENCH / f"formats__{model}__{fmt}__b{batch}.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def deploy_efficiency(_runs) -> tuple[str, str]:
+    """Memory, latency and throughput per deployment format (RTX 4090, CUDA graphs):
+    weights, prefill of 2048 tokens and decode per token at batch 1, decode
+    throughput at batch 16; speed-ups against FP16 (or ``--`` where FP16 does not
+    fit on the 24 GB card)."""
+    blocks = []
+    for model in MODEL_DISP:
+        rows = []
+        base1, base16 = load_format(model, "fp16", 1), load_format(model, "fp16", 16)
+        for fmt, label in FORMATS:
+            r1, r16 = load_format(model, fmt, 1), load_format(model, fmt, 16)
+            if r1 is None and fmt == "fp16" and load_format(model, "w4a4-s50", 1):
+                rows.append(" & ".join([MODEL_DISP[model], label, r"\multicolumn{5}{c}{does not fit in 24 GB}"]))
+                continue
+            if r1 is None:
+                continue
+            dec = r1["decode"]["ms_per_token"]
+            speed = "" if base1 is None or fmt == "fp16" else (
+                f" ({base1['decode']['ms_per_token'] / dec:.2f}$\\times$)")
+            thr = "--" if r16 is None else f"{r16['decode']['tokens_per_s']:.0f}"
+            if r16 is not None and base16 is not None and fmt != "fp16":
+                thr += f" ({r16['decode']['tokens_per_s'] / base16['decode']['tokens_per_s']:.2f}$\\times$)"
+            rows.append(" & ".join([
+                MODEL_DISP[model], label,
+                f"{r1['memory']['weight_bytes'] / 1e9:.2f}",
+                f"{r1['memory']['peak_allocated_bytes'] / 1e9:.2f}",
+                f"{r1['prefill']['p50_ms']:.0f}",
+                f"{dec:.1f}{speed}", thr,
+            ]))
+        if rows:
+            blocks.append(rows)
+    if not blocks:
+        raise SystemExit("deploy_efficiency: no formats__* benchmark records")
+    header = (r"Model & Format & weights (GB) & peak (GB) & prefill (ms) "
+              r"& decode (ms/token) & tokens/s at batch 16")
+    return "deploy_efficiency", _render("llccccc", header, blocks)
+
+
 def gemm_efficiency(_runs) -> tuple[str, str]:
     """Table 6 -- dense vs pairwise-4:8 sparse INT4 GEMM (``GEMM_US``)."""
     best = max(row["decode"][2] for row in GEMM_US)
@@ -581,6 +631,7 @@ BUILDERS = {
     "alpha_sweep": alpha_sweep,
     "mask_selection": mask_selection,
     "gemm_efficiency": gemm_efficiency,
+    "deploy_efficiency": deploy_efficiency,
     "alpha_gamma_grid": alpha_gamma_grid,
     "target_roles": target_roles,
     "compression_time": compression_time,
