@@ -7,8 +7,9 @@ compresses one linear layer.
     Blocks 1..l-1 of the compressed model are already compressed, so layer l
     receives the drifted input X_hat instead of the clean input X; the deployed
     model should still produce W X.
-(b) QDrift for layer l: three reconstruction targets, weighted (alpha, beta,
-    gamma), merge into one quadratic with the pair (H_mix, T); the mask and OBR's
+(b) QDrift for layer l: three reconstruction targets, weighted (alpha_l, beta_l,
+    gamma_l) derived from the layer's own calibration statistics (a trust region
+    for alpha_l, Ledoit-Wolf shrinkage for gamma_l), merge into one quadratic with the pair (H_mix, T); the mask and OBR's
     two stages with GPTQ then run unchanged on that pair, and the compressed layer
     becomes part of the prefix of layer l+1.  Orange marks what QDrift changes,
     blue what OBR already does.
@@ -131,22 +132,22 @@ def solver(ax) -> None:
     y0, h = 0.0, 15.0
     # Three targets.
     rbox(ax, 0, y0, 30, h, NEW, NEW_FILL)
-    text(ax, 15, y0 + h - 2.0, r"\textbf{three targets} (Eq.~5)", size=7.5)
-    rows = ((r"$\alpha$", r"$\|\hat w\hat X-wX\|^2$", r"asymmetric"),
-            (r"$\beta$", r"$\|\hat w\hat X-w\hat X\|^2$", r"symmetric (OBR)"),
-            (r"$\gamma$", r"$\|\hat wX-wX\|^2$", r"clean input"))
+    text(ax, 15, y0 + h - 2.0, r"\textbf{three targets}, derived weights", size=7.5)
+    rows = ((r"$\alpha_\ell$", r"$\|\hat w\hat X-wX\|^2$", r"asymmetric"),
+            (r"$\beta_\ell$", r"$\|\hat w\hat X-w\hat X\|^2$", r"symmetric (OBR)"),
+            (r"$\gamma_\ell$", r"$\|\hat wX-wX\|^2$", r"clean input"))
     for i, (wt, expr, name) in enumerate(rows):
         y = y0 + h - 5.4 - 3.6 * i
         text(ax, 2.2, y, wt, size=8, ha="left", color=NEW)
-        text(ax, 5.2, y, expr, size=8, ha="left")
+        text(ax, 5.6, y, expr, size=8, ha="left")
         text(ax, 29.0, y, name, size=7, ha="right", color=S.INK_2)
     arrow(ax, (30.4, y0 + h / 2), (33.6, y0 + h / 2))
     # Merged problem.
     rbox(ax, 34, y0, 27, h, NEW, NEW_FILL)
     text(ax, 47.5, y0 + h - 2.0, r"\textbf{one quadratic} (Eq.~6)", size=7.5)
     text(ax, 47.5, y0 + 8.7, r"$\min\;(\hat w-T)\,H_{\mathrm{mix}}\,(\hat w-T)^{\top}$", size=8)
-    text(ax, 47.5, y0 + 5.3, r"$H_{\mathrm{mix}}=(1-\gamma)H_{\hat X}+\gamma H_X$", size=8)
-    text(ax, 47.5, y0 + 2.0, r"$T=w-\alpha\,wDH_{\mathrm{mix}}^{-1}$", size=8)
+    text(ax, 47.5, y0 + 5.3, r"$H_{\mathrm{mix}}=(1-\gamma_\ell)H_{\hat X}+\gamma_\ell H_X$", size=8)
+    text(ax, 47.5, y0 + 2.0, r"$T=w-\alpha_\ell\,wDH_{\mathrm{mix}}^{-1}$", size=8)
     arrow(ax, (61.4, y0 + h / 2), (64.6, y0 + h / 2))
     # Mask.
     rbox(ax, 65, y0, 13.5, h, NEW, NEW_FILL)

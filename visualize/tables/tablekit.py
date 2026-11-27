@@ -9,8 +9,11 @@ and ``tables/pdf/<name>.pdf`` -- the same fragment compiled standalone with
 in ``visualize/plots/style.py`` (``figs/png/<name>.png`` + ``figs/pdf/<name>.pdf``).
 
 Numbers are pulled live from the v2 result records so a table never drifts from
-the campaign.  The mixture is selected on WikiText-2 *validation* perplexity; the
-``vs OBR`` delta is computed on the reported *test* perplexity.
+the campaign.  QDrift is the run whose per-layer mixture is derived from the
+calibration statistics (``qdrift-auto``, ``qdrift_of``).  The fixed-weight grid
+(LLaMA-2-7B) is compared with it through ``select``, which picks the grid point
+with the lowest WikiText-2 *validation* perplexity.  Every ``vs OBR`` delta is
+computed on the reported *test* perplexity.
 """
 
 from __future__ import annotations
@@ -29,6 +32,8 @@ TABLES = ROOT / "tables"
 RESULTS_V2 = ROOT / "results" / "v2"
 
 TAG_RE = re.compile(r"^qdrift-a(?P<alpha>[0-9.]+)c(?P<gamma>[0-9.]+)$")
+# QDrift with the per-layer mixture derived during compression (--mix-rule auto).
+AUTO_TAG = "qdrift-auto"
 
 # Display names for the bit-width tag of a setting.
 BITS_LABEL = {"W4A4": "W4A4KV4", "W4A16": "W4A16", "W2A16": "W2A16 g128"}
@@ -61,8 +66,9 @@ def mix_of(tag: str | None) -> tuple[float, float] | None:
 def load_runs(folder: Path | str = RESULTS_V2) -> dict[tuple, dict[str, dict]]:
     """Group v2 records by ``(model, bits, pattern, calib)`` -> ``{tag: record}``.
 
-    Only records on the selectable mixture grid (``seq``, ``qdrift``,
-    ``qdrift-a*c*``) are kept; legacy diagnostic tags are dropped.  When several
+    Only QDrift (``qdrift-auto``) and records on the fixed mixture grid (``seq``,
+    ``qdrift``, ``qdrift-a*c*``) are kept; localization and diagnostic tags are
+    dropped.  When several
     seeds of the same point exist they are stored under ``tag`` with a seed
     suffix (``tag@seed``) so callers can still find a single representative
     (seed 42) while seed studies see them all.
@@ -72,7 +78,7 @@ def load_runs(folder: Path | str = RESULTS_V2) -> dict[tuple, dict[str, dict]]:
         record = json.loads(path.read_text(encoding="utf-8"))
         ppl = record.get("ppl")
         tag = record.get("calibration")
-        if not ppl or "wikitext2" not in ppl or mix_of(tag) is None:
+        if not ppl or "wikitext2" not in ppl or (mix_of(tag) is None and tag != AUTO_TAG):
             continue
         key = (
             record.get("model"),
@@ -92,8 +98,29 @@ def _val(record: dict) -> float:
     return ppl["wikitext2_val"] if ppl.get("wikitext2_val") is not None else ppl["wikitext2"]
 
 
+def qdrift_of(tags: dict[str, dict]) -> dict | None:
+    """QDrift's record (derived per-layer mixture, seed 42), or ``None``."""
+    return tags.get(AUTO_TAG)
+
+
+def mean_mix(record: dict) -> tuple[float, float] | None:
+    """Mean derived ``(alpha, gamma)`` over the compressed layers of a QDrift run,
+    or ``None`` when the record carries no per-layer mixture."""
+    mixes = [m["mix"] for m in (record.get("layers") or {}).values() if "mix" in m]
+    if not mixes:
+        return None
+    return (statistics.mean(m["alpha"] for m in mixes),
+            statistics.mean(m["gamma"] for m in mixes))
+
+
+def grid_size(tags: dict[str, dict]) -> int:
+    """Number of fixed-weight grid points (OBR included) evaluated at seed 42."""
+    return sum(1 for t in tags if "@" not in t and t != AUTO_TAG)
+
+
 def select(tags: dict[str, dict]) -> tuple[dict | None, dict | None, dict | None]:
-    """Return ``(obr, pure, selected)`` records for one grid (seed 42 only).
+    """Return ``(obr, pure, selected)`` records for one fixed-weight grid (seed 42
+    only; QDrift's derived run is not a grid point).
 
     ``selected`` is the lowest-validation point; ties break toward the smallest
     mixture (then smaller gamma, then smaller alpha), so OBR wins a true tie and
@@ -101,7 +128,7 @@ def select(tags: dict[str, dict]) -> tuple[dict | None, dict | None, dict | None
     reproducible and never worse than OBR on the criterion.  ``pure`` is
     ``(1, 0)`` or ``None``.
     """
-    seed42 = {t: r for t, r in tags.items() if "@" not in t}
+    seed42 = {t: r for t, r in tags.items() if "@" not in t and t != AUTO_TAG}
     obr = seed42.get("seq") or seed42.get("qdrift-a0c0")
     if obr is None:
         return None, None, None

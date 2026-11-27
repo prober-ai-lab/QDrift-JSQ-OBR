@@ -17,7 +17,11 @@ Keys are ``/``-separated; ``<m>`` is a model id (``llama2-7b``, ``llama3.1-8b``,
     <m>/<s>/{qd-abs,pure-abs}                         |qd-delta|, |pure-delta| (1 dp)
     <m>/qd-delta-{min,max}                            signed range of qd-delta over a model's rows
     overfit/w4a4-s50/max-abs                          largest |pure-delta| at W4A4KV4 50%
-    <m>/<s>/{alpha,gamma,mix}                         selected mixture
+    <m>/<s>/{mean-alpha,mean-gamma,mean-mix}          QDrift's derived mixture, mean over layers
+    llama2-7b/<s>/{grid,grid-val,grid-delta,grid-alpha,grid-gamma,grid-mix,grid-runs}
+                                                      best fixed grid point (validation-selected)
+    llama2-7b/<s>/grid-share                          (OBR - QDrift) / (OBR - grid), % of test PPL
+    grid-share-{min,max}, grid-runs-{min,max}         over the 7B settings
     <m>/<s>/seed/{obr-mean,obr-sd,qd-mean,qd-sd,delta,gap,gap-ratio}
     seed/min-gap-ratio                                smallest gap / larger sd over the seed rows
     <m>/<s>/zs/<task>/{obr,qd,diff}                   zero-shot accuracy (1 dp), diff signed
@@ -26,15 +30,15 @@ Keys are ``/``-separated; ``<m>`` is a model id (``llama2-7b``, ``llama3.1-8b``,
                                                       (w4a4-s50, w2a16-s50, 4to8 = 4:8p and 4:8m)
     <m>/<s>/zs/retain                                 best avg / FP16 avg, %
     <m>/fp16/zs/<task>                                FP16 dense reference
-    <m>/<s>/time/{obr,qd,overhead}                    compression minutes, % overhead
+    <m>/<s>/time/{obr,qd,ratio}                       compression minutes, QDrift / OBR
     zs/{obr-avg-wins,settings}                        settings where OBR has the higher avg
     zs/obr-avg-wins-lt1                               ... of which by less than one point
     zs/chance                                         chance level of the six-task average
-    time/overhead-{min,max}                           range of the compression-time overhead
+    time/ratio-{min,max}                              range of the compression-time ratio
     loc/<row>/{ppl,ppl-val,delta}, loc/late-ratio     Table 2 (localization)
     sweep/a<alpha>/{ppl,ppl-val}                      Table 4 (gamma = 0)
     mask/{score,exact,qd,mask-gain,qd-delta}          Table 5
-    grid/<s>/a<a>g<g>, grid/s50/spread, grid/s70/worst-ratio, grid/s70/opt{,-mix}
+    grid/<s>/a<a>g<g>, grid/s50/spread, grid/s70/worst-ratio, grid/s70/opt{,-mix}  (LLaMA-2-7B)
     llama2-7b/w4a4-s70/clean{,-val}                   pure clean target (0, 1)
     calib/<size>/<s>/obr                              OBR at other calibration sizes
     drift/<comp>/{ppl,first-above-1,rel-min,rel-max,ratio-min,ratio-max}, drift/dense/ppl
@@ -103,12 +107,13 @@ class Numbers:
 
 
 def main_numbers(n: Numbers, runs) -> None:
-    model_deltas, overfit_s50 = defaultdict(list), []
+    model_deltas, overfit_s50, grid_share, grid_runs = defaultdict(list), [], [], []
     for model, bits, pattern in P.MAIN_SPEC + [s for s in P.OVERFIT_SPEC if s not in P.MAIN_SPEC]:
         tags = runs.get((model, bits, pattern, P.CALIB))
         if not tags:
             continue
-        obr, pure, sel = T.select(tags)
+        obr, pure, grid = T.select(tags)
+        sel = T.qdrift_of(tags)
         base = f"{model}/{setting_id(bits, pattern)}"
         n.ppl(f"{base}/obr", obr)
         if pure is not None:
@@ -117,7 +122,7 @@ def main_numbers(n: Numbers, runs) -> None:
             n[f"{base}/pure-abs"] = f"{abs(T.delta_vs_obr(pure, obr)):.1f}"
             if (bits, pattern) == ("W4A4", "s50"):
                 overfit_s50.append(abs(T.delta_vs_obr(pure, obr)))
-        if (model, bits, pattern) not in P.MAIN_SPEC:
+        if (model, bits, pattern) not in P.MAIN_SPEC or sel is None:
             continue
         n.ppl(f"{base}/qd", sel)
         delta = T.delta_vs_obr(sel, obr)
@@ -125,9 +130,24 @@ def main_numbers(n: Numbers, runs) -> None:
         n[f"{base}/qd-red"] = f"{abs(delta):.0f}"
         n[f"{base}/qd-abs"] = f"{abs(delta):.1f}"
         model_deltas[model].append(round(delta, 1))
-        alpha, gamma = T.mix_of(sel["calibration"])
-        n[f"{base}/alpha"], n[f"{base}/gamma"] = f"{alpha:g}", f"{gamma:g}"
-        n[f"{base}/mix"] = f"$({alpha:g},{gamma:g})$"
+        mix = T.mean_mix(sel)
+        if mix is not None:
+            n[f"{base}/mean-alpha"], n[f"{base}/mean-gamma"] = f"{mix[0]:.2f}", f"{mix[1]:.2f}"
+            n[f"{base}/mean-mix"] = f"$({mix[0]:.2f},{mix[1]:.2f})$"
+        if (model, bits, pattern) in P.GRID_SPEC and grid is not obr:
+            n.ppl(f"{base}/grid", grid)
+            n[f"{base}/grid-delta"] = signed(T.delta_vs_obr(grid, obr))
+            alpha, gamma = T.mix_of(grid["calibration"])
+            n[f"{base}/grid-alpha"], n[f"{base}/grid-gamma"] = f"{alpha:g}", f"{gamma:g}"
+            n[f"{base}/grid-mix"] = f"$({alpha:g},{gamma:g})$"
+            n[f"{base}/grid-runs"] = f"{T.grid_size(tags)}"
+            o, q, g = (r["ppl"]["wikitext2"] for r in (obr, sel, grid))
+            grid_share.append(100 * (o - q) / (o - g))
+            grid_runs.append(T.grid_size(tags))
+            n[f"{base}/grid-share"] = f"{grid_share[-1]:.0f}"
+    if grid_share:
+        n["grid-share-min"], n["grid-share-max"] = f"{min(grid_share):.0f}", f"{max(grid_share):.0f}"
+        n["grid-runs-min"], n["grid-runs-max"] = f"{min(grid_runs)}", f"{max(grid_runs)}"
     for model, deltas in model_deltas.items():
         n[f"{model}/qd-delta-min"], n[f"{model}/qd-delta-max"] = signed(min(deltas)), signed(max(deltas))
     n["overfit/w4a4-s50/max-abs"] = f"{max(overfit_s50):.1f}"
@@ -137,9 +157,12 @@ def seed_numbers(n: Numbers, runs) -> None:
     ratios = []
     for model, bits, pattern in P.SEED_SPEC:
         tags = runs[(model, bits, pattern, P.CALIB)]
-        _, _, sel = T.select(tags)
-        om, osd = T.mean_sd(T.seeds_of(tags, "seq") or T.seeds_of(tags, "qdrift-a0c0"))
-        sm, ssd = T.mean_sd(T.seeds_of(tags, sel["calibration"]))
+        obr_seeds = T.seeds_of(tags, "seq") or T.seeds_of(tags, "qdrift-a0c0")
+        qd_seeds = T.seeds_of(tags, T.AUTO_TAG)
+        if len(obr_seeds) < 2 or len(qd_seeds) < 2:
+            continue
+        om, osd = T.mean_sd(obr_seeds)
+        sm, ssd = T.mean_sd(qd_seeds)
         base = f"{model}/{setting_id(bits, pattern)}/seed"
         n[f"{base}/obr-mean"], n[f"{base}/obr-sd"] = f"{om:.2f}", f"{osd:.2f}"
         n[f"{base}/qd-mean"], n[f"{base}/qd-sd"] = f"{sm:.2f}", f"{ssd:.2f}"
@@ -147,7 +170,8 @@ def seed_numbers(n: Numbers, runs) -> None:
         n[f"{base}/gap"] = f"{om - sm:.2f}"
         n[f"{base}/gap-ratio"] = f"{(om - sm) / max(osd, ssd):.1f}"
         ratios.append((om - sm) / max(osd, ssd))
-    n["seed/min-gap-ratio"] = f"{min(ratios):.1f}"
+    if ratios:
+        n["seed/min-gap-ratio"] = f"{min(ratios):.1f}"
 
 
 def zeroshot_numbers(n: Numbers, runs) -> None:
@@ -164,7 +188,10 @@ def zeroshot_numbers(n: Numbers, runs) -> None:
         tags = runs.get((model, bits, pattern, P.CALIB))
         if not tags:
             continue
-        obr, _, sel = T.select(tags)
+        obr, _, _ = T.select(tags)
+        sel = T.qdrift_of(tags)
+        if sel is None:
+            continue
         oz, sz = obr.get("zeroshot"), sel.get("zeroshot")
         if not oz or not sz:
             continue
@@ -198,10 +225,13 @@ def zeroshot_numbers(n: Numbers, runs) -> None:
     n["zs/obr-avg-wins-lt1"] = f"{obr_wins_lt1}"
     for gid in ("w4a4-s50", "w2a16-s50", "4to8"):
         g = group[gid]
+        if not g["red"]:
+            continue
         n[f"zs/{gid}/ppl-red-min"] = f"{min(g['red']):.1f}"
         n[f"zs/{gid}/ppl-red-max"] = f"{max(g['red']):.1f}"
         n[f"zs/{gid}/wins"], n[f"zs/{gid}/pairs"] = f"{g['wins']}", f"{g['pairs']}"
-        n[f"zs/{gid}/max-abs-llama2"] = f"{max(g['abs-llama2']):.1f}"
+        if g["abs-llama2"]:
+            n[f"zs/{gid}/max-abs-llama2"] = f"{max(g['abs-llama2']):.1f}"
     # Chance level of each task (random guessing; LAMBADA is open-vocabulary, so 0).
     chance = {"piqa": 50.0, "hellaswag": 25.0, "arc_easy": 25.0, "arc_challenge": 25.0,
               "winogrande": 50.0, "lambada_openai": 0.0}
@@ -209,15 +239,20 @@ def zeroshot_numbers(n: Numbers, runs) -> None:
 
 
 def time_numbers(n: Numbers, runs) -> None:
-    overheads = []
+    ratios = []
     for model, bits, pattern in P.COMPRESS_SPEC:
-        obr, _, sel = T.select(runs[(model, bits, pattern, P.CALIB)])
+        tags = runs.get((model, bits, pattern, P.CALIB)) or {}
+        obr, _, _ = T.select(tags)
+        sel = T.qdrift_of(tags)
+        if obr is None or sel is None or not obr.get("compress_s") or not sel.get("compress_s"):
+            continue
         o, q = obr["compress_s"], sel["compress_s"]
         base = f"{model}/{setting_id(bits, pattern)}/time"
         n[f"{base}/obr"], n[f"{base}/qd"] = f"{o / 60:.0f}", f"{q / 60:.0f}"
-        n[f"{base}/overhead"] = f"{100 * (q - o) / o:.0f}"
-        overheads.append(round(100 * (q - o) / o))
-    n["time/overhead-min"], n["time/overhead-max"] = f"{min(overheads)}", f"{max(overheads)}"
+        n[f"{base}/ratio"] = f"{q / o:.1f}"
+        ratios.append(round(q / o, 1))
+    if ratios:
+        n["time/ratio-min"], n["time/ratio-max"] = f"{min(ratios):.1f}", f"{max(ratios):.1f}"
 
 
 def ablation_numbers(n: Numbers, runs) -> None:
@@ -241,7 +276,9 @@ def ablation_numbers(n: Numbers, runs) -> None:
     n.ppl("llama2-7b/w4a4-s70/clean", s70["qdrift-a0c1"])
 
     score = runs[("llama2-7b", "W4A4", "4to8p", P.CALIB)]["seq"]
-    obr, _, sel = T.select(runs[("llama2-7b", "W4A4", "4to8p-obs", P.CALIB)])
+    obs = runs[("llama2-7b", "W4A4", "4to8p-obs", P.CALIB)]
+    obr, _, _ = T.select(obs)
+    sel = T.qdrift_of(obs)
     n.ppl("mask/score", score)
     n.ppl("mask/exact", obr)
     n.ppl("mask/qd", sel)
@@ -250,7 +287,7 @@ def ablation_numbers(n: Numbers, runs) -> None:
 
     axis = (0.0, 0.25, 0.5)
     for pattern in ("s50", "s70"):
-        tags = runs[("llama3.1-8b", "W4A4", pattern, P.CALIB)]
+        tags = runs[("llama2-7b", "W4A4", pattern, P.CALIB)]
         cells = {T.mix_of(t): T._val(r) for t, r in tags.items()
                  if "@" not in t and T.mix_of(t) and set(T.mix_of(t)) <= set(axis)}
         for (a, g), v in cells.items():

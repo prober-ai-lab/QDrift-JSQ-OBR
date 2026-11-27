@@ -75,7 +75,7 @@ with a SparseGPT mask and GPTQ on the late half:
   accuracy-neutral.
 
 <p align="center">
-  <img src="figs/png/results__mixture_grid__all__alpha-profiles.png" width="46%"
+  <img src="figs/png/results__mixture_grid__llama2-7b__alpha-profiles.png" width="46%"
        alt="Validation perplexity relative to OBR against the asymmetric weight alpha"/>
   <img src="figs/png/results__mixture_grid__llama2-7b__ppl-vs-sparsity-w4a4.png" width="46%"
        alt="Perplexity against sparsity for OBR, the pure asymmetric target and QDrift"/>
