@@ -81,12 +81,12 @@ def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--kv-grid", choices=("midrise", "midtread"), default=None, help="KV-cache grid (default: --grid)")
     parser.add_argument("--range", choices=("full", "clip"), default="clip")
     parser.add_argument("--quant", choices=("rtn", "gptq"), default="gptq")
-    parser.add_argument("--comp", choices=("none", "obr", "drift"), default="obr", help="calibration objective: obr=OBR (symmetric on the drifted input), drift=QDrift's mixture (--mix-asym, --mix-clean)")
-    parser.add_argument("--mix-asym", type=float, default=1.0, help="drift: weight alpha of the asymmetric target E||W_hat X_hat - W X||^2 (1 with --mix-clean 0 = the pure asymmetric target)")
-    parser.add_argument("--mix-clean", type=float, default=0.0, help="drift: weight gamma of the clean-input target E||W_hat X - W X||^2; the symmetric target gets 1 - alpha - gamma (0, 0 = OBR)")
-    parser.add_argument("--mix-blocks", type=_block_range, default=None, help="drift: apply the mixture only to decoder blocks FIRST-LAST (inclusive); OBR (0, 0) elsewhere. Localization ablation")
-    parser.add_argument("--mix-modules", choices=("all", "attn", "mlp_in", "mlp_out"), default="all", help="drift: apply the mixture only to attn (q/k/v/o), mlp_in (gate/up) or mlp_out (down); OBR (0, 0) elsewhere")
-    parser.add_argument("--mix-rule", choices=("fixed", "auto"), default="fixed", help="drift: fixed = the global --mix-asym/--mix-clean; auto = derive each layer group's (alpha, gamma) from its calibration statistics (docs/mix-auto.md)")
+    parser.add_argument("--comp", choices=("none", "obr", "drift"), default="obr", help="calibration objective: obr=OBR (symmetric on the drifted input), drift=QDrift's mixture (per-layer weights derived by --mix-rule auto unless --mix-rule fixed)")
+    parser.add_argument("--mix-asym", type=float, default=None, help="drift, --mix-rule fixed: weight alpha of the asymmetric target E||W_hat X_hat - W X||^2 (default 1; 1 with --mix-clean 0 = the pure asymmetric target)")
+    parser.add_argument("--mix-clean", type=float, default=None, help="drift, --mix-rule fixed: weight gamma of the clean-input target E||W_hat X - W X||^2; the symmetric target gets 1 - alpha - gamma (default 0; 0, 0 = OBR)")
+    parser.add_argument("--mix-blocks", type=_block_range, default=None, help="drift, --mix-rule fixed: apply the mixture only to decoder blocks FIRST-LAST (inclusive); OBR (0, 0) elsewhere. Localization ablation")
+    parser.add_argument("--mix-modules", choices=("all", "attn", "mlp_in", "mlp_out"), default="all", help="drift, --mix-rule fixed: apply the mixture only to attn (q/k/v/o), mlp_in (gate/up) or mlp_out (down); OBR (0, 0) elsewhere")
+    parser.add_argument("--mix-rule", choices=("fixed", "auto"), default=None, help="drift: auto (default) = derive each layer group's (alpha, gamma) from its calibration statistics (docs/mix-auto.md); fixed = the global --mix-asym/--mix-clean (grid and ablations)")
     parser.add_argument("--rotation", choices=("hadamard", "none"), default="hadamard", help="hadamard=fast global Hadamard; none=identity")
     parser.add_argument("--nsamples", type=int, default=128)
     parser.add_argument("--seqlen", type=int, default=2048)
@@ -132,6 +132,27 @@ def _add_benchmark_arguments(parser: argparse.ArgumentParser) -> None:
     # fmt: on
 
 
+def _mixture(args: argparse.Namespace) -> dict:
+    """QDrift's mixture settings.  ``--comp drift`` derives the per-layer
+    weights (``auto``) unless ``--mix-rule fixed`` is given; fixed weights
+    are never selected implicitly, so an old ``--mix-asym 1 --mix-clean 0``
+    command cannot silently turn into ``auto``."""
+    explicit = (
+        args.mix_asym is not None or args.mix_clean is not None
+        or args.mix_blocks is not None or args.mix_modules != "all"
+    )
+    rule = args.mix_rule or ("auto" if args.comp == "drift" else "fixed")
+    if rule == "auto" and explicit:
+        raise SystemExit("--mix-asym/--mix-clean/--mix-blocks/--mix-modules need --mix-rule fixed")
+    return {
+        "mix_asym": 1.0 if args.mix_asym is None else args.mix_asym,
+        "mix_clean": 0.0 if args.mix_clean is None else args.mix_clean,
+        "mix_blocks": args.mix_blocks,
+        "mix_modules": args.mix_modules,
+        "mix_rule": rule,
+    }
+
+
 def _build_recipe(args: argparse.Namespace) -> CompressionRecipe:
     group = args.w_group_size
     return CompressionRecipe(
@@ -167,11 +188,7 @@ def _build_recipe(args: argparse.Namespace) -> CompressionRecipe:
         compensation=CompensationSpec(
             method=args.comp,
             damping=args.damping,
-            mix_asym=args.mix_asym,
-            mix_clean=args.mix_clean,
-            mix_blocks=args.mix_blocks,
-            mix_modules=args.mix_modules,
-            mix_rule=args.mix_rule,
+            **_mixture(args),
         ),
         nsamples=args.nsamples,
         seqlen=args.seqlen,

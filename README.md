@@ -129,7 +129,7 @@ python -m main run --model llama2-7b \
   --criterion sparsegpt --structure unstructured --sparsity 0.7 \
   --w-bits 4 --a-bits 4 --kv-bits 4 --w-gran channel --grid midtread --range clip --quant gptq \
   --nsamples 128 --seqlen 1024 --seed 42 \
-  --comp drift --mix-asym 0.25 --mix-clean 0
+  --comp drift
 ```
 
 ## Command line
@@ -147,8 +147,9 @@ The flags that matter most:
 | Flag | Meaning |
 |---|---|
 | `--comp {none,obr,drift}` | Compensation objective. `drift` is the QDrift mixture. |
-| `--mix-asym α`, `--mix-clean γ` | Mixture weights. `(0, 0)` is OBR and `(1, 0)` the pure asymmetric target. |
-| `--mix-blocks A-B`, `--mix-modules {attn,mlp_in,mlp_out}` | Apply the mixture only to some layers, with OBR elsewhere (localization ablation). |
+| `--mix-rule {auto,fixed}` | `auto` (default for `drift`) derives every layer group's (α, γ) from its own calibration statistics (`docs/mix-auto.md`); `fixed` uses one global pair (grid search and ablations). |
+| `--mix-asym α`, `--mix-clean γ` | Fixed mixture weights (`--mix-rule fixed`). `(0, 0)` is OBR and `(1, 0)` the pure asymmetric target. |
+| `--mix-blocks A-B`, `--mix-modules {attn,mlp_in,mlp_out}` | With `--mix-rule fixed`: apply the mixture only to some layers, with OBR elsewhere (localization ablation). |
 | `--structure {unstructured,2:4,4:8}`, `--sparsity` | Sparsity pattern and level. |
 | `--pairwise-fraction f` | Share of 2:4 / 4:8 layers using the hardware pairwise layout. `1.0` = every layer, the only INT4-deployable choice. |
 | `--mask-select {score,obs}` | N:M mask from the criterion score, or the exact block-sequential selection. |

@@ -276,3 +276,35 @@ def test_auto_mix_group(monkeypatch) -> None:
     obr = P._process_full_layer(_layer_recipe(CompensationSpec(method="obr")), qparams, "a", layers["a"].weight.data, z, None, "cpu", True)
     delta = obr.new_weight.float() - layers["a"].weight.data
     assert float(((delta @ h) * delta).sum()) < info["error"]
+
+
+def _cli_recipe(*flags: str) -> CompressionRecipe:
+    import argparse
+
+    import main as cli
+
+    parser = argparse.ArgumentParser()
+    cli._add_common_arguments(parser)
+    recipe = cli._build_recipe(parser.parse_args(list(flags)))
+    recipe.validate()
+    return recipe
+
+
+def test_cli_defaults_to_auto() -> None:
+    """``--comp drift`` alone derives the weights; fixed weights must be asked
+    for, so the stored run names (and recipe hashes) of the grid, the pure
+    asymmetric target and OBR stay unchanged."""
+    auto = _cli_recipe("--comp", "drift")
+    assert auto.compensation.mix_rule == "auto"
+    assert run_name(auto).endswith("_qdrift-auto_seed42")
+    assert run_name(_cli_recipe("--comp", "obr")).endswith("_seq_seed42")
+    pure = _cli_recipe("--comp", "drift", "--mix-rule", "fixed")
+    assert run_name(pure) == run_name(CompressionRecipe(compensation=CompensationSpec(method="drift")))
+    assert pure.recipe_hash() == CompressionRecipe(compensation=CompensationSpec(method="drift")).recipe_hash()
+    grid = _cli_recipe("--comp", "drift", "--mix-rule", "fixed", "--mix-asym", "0.25", "--mix-clean", "0")
+    assert run_name(grid).endswith("_qdrift-a0.25c0_seed42")
+    local = _cli_recipe("--comp", "drift", "--mix-rule", "fixed", "--mix-blocks", "0-7")
+    assert run_name(local).endswith("_qdrift-L0-7_seed42")
+    for flags in (("--mix-asym", "1"), ("--mix-clean", "0"), ("--mix-blocks", "0-3"), ("--mix-modules", "attn")):
+        with pytest.raises(SystemExit):
+            _cli_recipe("--comp", "drift", *flags)

@@ -4,9 +4,10 @@
 #
 # Reproduce the headline row of the paper's main table: LLaMA-2-7B, W4A4KV4 with
 # 70% unstructured sparsity, SparseGPT mask, GPTQ late half, 128x1024 WikiText-2
-# calibration, seed 42.  Runs OBR and QDrift at the validation-selected mixture
-# (alpha, gamma) = (0.25, 0); each writes results/v2/<run name>.json with the
-# WikiText-2 test and validation perplexity (paper: 35.18 and 23.30 test).
+# calibration, seed 42.  Runs OBR and QDrift, whose per-layer mixture weights
+# are derived from the calibration statistics (--mix-rule auto, the default of
+# --comp drift); each writes results/v2/<run name>.json with the WikiText-2 test
+# and validation perplexity (OBR 35.18, QDrift 26.53 test).
 #
 # Extra flags are passed to both runs, e.g. --devices cuda:1 or --zeroshot.
 set -euo pipefail
@@ -24,4 +25,4 @@ RECIPE=(
 )
 
 "${PYTHON:-python}" -m main run "${RECIPE[@]}" --comp obr
-"${PYTHON:-python}" -m main run "${RECIPE[@]}" --comp drift --mix-asym 0.25 --mix-clean 0
+"${PYTHON:-python}" -m main run "${RECIPE[@]}" --comp drift
