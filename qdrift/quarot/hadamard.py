@@ -113,10 +113,27 @@ def get_hadK(n, transpose=False):
     return hadK, K
 
 
+# The K x K factor of each (size, transpose) on each (device, dtype).  Building it
+# on the host and copying it per call is a synchronizing H2D transfer, which CUDA
+# graph capture rejects; the cached copy holds the same values, so results are
+# unchanged.
+_HADK_CACHE: dict[tuple, tuple[torch.Tensor | None, int]] = {}
+
+
+def _cached_hadK(n, transpose, device, dtype):
+    key = (n, transpose, device, dtype)
+    if key not in _HADK_CACHE:
+        hadK, K = get_hadK(n, transpose)
+        if K > 1:
+            hadK = hadK.view(1, K, K).to(device=device, dtype=dtype)
+        _HADK_CACHE[key] = (hadK, K)
+    return _HADK_CACHE[key]
+
+
 def matmul_hadU(X, transpose=False):
     n = X.shape[-1]
     try:
-        hadK, K = get_hadK(n, transpose)
+        hadK, K = _cached_hadK(n, transpose, X.device, X.dtype)
     except AssertionError:
         matrix = _fallback_hadamard(n, X.device)
         if transpose:
@@ -140,7 +157,7 @@ def matmul_hadU(X, transpose=False):
         # input = torch.bmm(
         #     hadK.repeat(len(input), 1, 1).to(input.device).to(input.dtype), input)
         # Use bcast instead
-        input = hadK.view(1, K, K).to(input) @ input
+        input = hadK @ input
 
     return input.view(X.shape) / (n**0.5)
 
