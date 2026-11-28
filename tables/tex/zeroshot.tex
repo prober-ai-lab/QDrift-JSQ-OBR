@@ -3,27 +3,27 @@
 Model & Setting & Method & PIQA & HellaS. & ARC-e & ARC-c & Wino. & LAMB. & Avg. \\
 \midrule
 LLaMA-2-7B & FP16 reference & dense & 78.8 & 76.2 & 73.9 & 45.0 & 69.4 & 73.6 & 69.5 \\
- & W4A4KV4 50\% & OBR & 72.6 & $\mathbf{62.3}$ & $\mathbf{62.7}$ & $\mathbf{35.5}$ & $\mathbf{62.8}$ & $\mathbf{63.7}$ & $\mathbf{59.9}$ \\
- &  & QDrift $(0.25, 0.5)$ & $\mathbf{72.9}$ & 61.7 & 62.2 & 35.4 & 62.1 & 62.0 & 59.4 \\
- & W4A4KV4 4:8p & OBR & 56.4 & $\mathbf{33.9}$ & $\mathbf{35.9}$ & $\mathbf{23.3}$ & 50.8 & $\mathbf{19.4}$ & $\mathbf{36.6}$ \\
- &  & QDrift $(0.25, 0.25)$ & $\mathbf{56.6}$ & 33.0 & 34.6 & 21.8 & $\mathbf{54.1}$ & 14.3 & 35.8 \\
+ & W4A4KV4 50\% & OBR & $\mathbf{72.6}$ & $\mathbf{62.3}$ & $\mathbf{62.7}$ & $\mathbf{35.5}$ & $\mathbf{62.8}$ & $\mathbf{63.7}$ & $\mathbf{59.9}$ \\
+ &  & QDrift & 71.2 & 59.8 & 59.4 & 31.9 & 60.2 & 56.4 & 56.5 \\
+ & W4A4KV4 4:8p & OBR & $\mathbf{56.4}$ & $\mathbf{33.9}$ & $\mathbf{35.9}$ & 23.3 & 50.8 & $\mathbf{19.4}$ & $\mathbf{36.6}$ \\
+ &  & QDrift & 56.1 & 33.2 & 31.8 & $\mathbf{25.4}$ & $\mathbf{56.4}$ & 11.3 & 35.7 \\
  & W2A16 g128 50\% & OBR & 58.0 & 32.1 & 36.3 & 22.7 & 54.6 & 17.6 & 36.9 \\
- &  & QDrift $(0.5, 0)$ & $\mathbf{65.0}$ & $\mathbf{47.1}$ & $\mathbf{48.3}$ & $\mathbf{27.9}$ & $\mathbf{59.9}$ & $\mathbf{39.2}$ & $\mathbf{47.9}$ \\
+ &  & QDrift & $\mathbf{62.8}$ & $\mathbf{42.6}$ & $\mathbf{42.5}$ & $\mathbf{25.4}$ & $\mathbf{59.5}$ & $\mathbf{28.9}$ & $\mathbf{43.6}$ \\
 \midrule
 LLaMA-3.1-8B & FP16 reference & dense & 81.1 & 79.3 & 82.4 & 54.9 & 74.6 & 75.1 & 74.6 \\
  & W4A4KV4 50\% & OBR & $\mathbf{69.5}$ & $\mathbf{57.6}$ & $\mathbf{59.0}$ & $\mathbf{33.3}$ & $\mathbf{63.5}$ & $\mathbf{54.2}$ & $\mathbf{56.2}$ \\
- &  & QDrift $(0.25, 0.5)$ & 67.8 & 55.0 & 56.4 & 31.7 & 61.0 & 49.2 & 53.5 \\
- & W4A4KV4 4:8p & OBR & 51.5 & 27.4 & 28.7 & $\mathbf{23.4}$ & 48.1 & 3.5 & 30.4 \\
- &  & QDrift $(0.25, 0.25)$ & $\mathbf{53.4}$ & $\mathbf{28.8}$ & $\mathbf{28.8}$ & 23.0 & $\mathbf{48.6}$ & $\mathbf{4.6}$ & $\mathbf{31.2}$ \\
- & W2A16 g128 50\% & OBR & 60.6 & 38.3 & 43.6 & $\mathbf{25.4}$ & 53.9 & 21.4 & 40.5 \\
- &  & QDrift $(0.25, 0.25)$ & $\mathbf{63.0}$ & $\mathbf{41.8}$ & $\mathbf{45.8}$ & 24.4 & $\mathbf{56.7}$ & $\mathbf{30.0}$ & $\mathbf{43.6}$ \\
+ &  & QDrift & 65.1 & 50.6 & 53.1 & 29.1 & 57.1 & 40.9 & 49.3 \\
+ & W4A4KV4 4:8p & OBR & $\mathbf{51.5}$ & 27.4 & $\mathbf{28.7}$ & $\mathbf{23.4}$ & 48.1 & $\mathbf{3.5}$ & 30.4 \\
+ &  & QDrift & 51.1 & $\mathbf{28.6}$ & 28.3 & 21.8 & $\mathbf{50.7}$ & 2.6 & $\mathbf{30.5}$ \\
+ & W2A16 g128 50\% & OBR & $\mathbf{60.6}$ & 38.3 & $\mathbf{43.6}$ & $\mathbf{25.4}$ & 53.9 & $\mathbf{21.4}$ & $\mathbf{40.5}$ \\
+ &  & QDrift & 59.2 & 38.3 & 38.8 & 22.6 & $\mathbf{54.9}$ & 20.6 & 39.1 \\
 \midrule
 LLaMA-2-13B & FP16 reference & dense & 80.3 & 79.6 & 76.5 & 48.8 & 72.5 & 76.5 & 72.4 \\
- & W4A4KV4 50\% & OBR & 74.7 & $\mathbf{68.4}$ & $\mathbf{71.0}$ & $\mathbf{41.6}$ & 66.7 & $\mathbf{72.8}$ & $\mathbf{65.9}$ \\
- &  & QDrift $(0.25, 0.5)$ & $\mathbf{74.9}$ & 67.4 & 70.2 & 40.2 & $\mathbf{68.0}$ & 70.6 & 65.2 \\
- & W4A4KV4 4:8p & OBR & $\mathbf{58.5}$ & $\mathbf{37.7}$ & 38.3 & 24.3 & 53.8 & $\mathbf{28.4}$ & $\mathbf{40.2}$ \\
- &  & QDrift $(0.25, 0.25)$ & 57.9 & 37.4 & $\mathbf{38.6}$ & $\mathbf{24.4}$ & $\mathbf{54.8}$ & 26.2 & 39.9 \\
- & W2A16 g128 50\% & OBR & 65.2 & 49.2 & 49.8 & 28.4 & 62.6 & 50.6 & 51.0 \\
- &  & QDrift $(0.25, 0.25)$ & $\mathbf{70.2}$ & $\mathbf{54.0}$ & $\mathbf{58.9}$ & $\mathbf{32.0}$ & $\mathbf{63.1}$ & $\mathbf{60.9}$ & $\mathbf{56.5}$ \\
+ & W4A4KV4 50\% & OBR & $\mathbf{74.7}$ & $\mathbf{68.4}$ & $\mathbf{71.0}$ & $\mathbf{41.6}$ & $\mathbf{66.7}$ & $\mathbf{72.8}$ & $\mathbf{65.9}$ \\
+ &  & QDrift & 74.2 & 65.9 & 68.1 & 40.5 & 65.8 & 65.1 & 63.3 \\
+ & W4A4KV4 4:8p & OBR & $\mathbf{58.5}$ & $\mathbf{37.7}$ & $\mathbf{38.3}$ & 24.3 & $\mathbf{53.8}$ & $\mathbf{28.4}$ & $\mathbf{40.2}$ \\
+ &  & QDrift & 57.7 & 36.1 & 34.0 & $\mathbf{24.9}$ & 53.4 & 17.3 & 37.2 \\
+ & W2A16 g128 50\% & OBR & 65.2 & 49.2 & 49.8 & 28.4 & $\mathbf{62.6}$ & 50.6 & 51.0 \\
+ &  & QDrift & $\mathbf{67.6}$ & $\mathbf{51.4}$ & $\mathbf{53.7}$ & $\mathbf{30.5}$ & 61.5 & $\mathbf{50.7}$ & $\mathbf{52.6}$ \\
 \bottomrule
 \end{tabular}

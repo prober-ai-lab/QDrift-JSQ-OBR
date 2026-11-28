@@ -1,10 +1,17 @@
 \begin{tabular}{llccc}
 \toprule
-Model & Setting & OBR (min) & QDrift (min) & overhead \\
+Model & Setting & OBR (min) & QDrift (min) & ratio \\
 \midrule
-LLaMA-2-7B & W4A4KV4 70\% & 57 & 72 & $+26\%$ \\
- & W2A16 g128 50\% & 86 & 93 & $+9\%$ \\
-LLaMA-3.1-8B & W4A4KV4 70\% & 64 & 78 & $+22\%$ \\
- & W2A16 g128 50\% & 102 & 116 & $+13\%$ \\
+LLaMA-2-7B & W4A4KV4 70\% & 57 & 115 & $2.01\times$ \\
+ & W4A4KV4 pairwise 4:8 & 89 & 172 & $1.93\times$ \\
+ & W2A16 g128 50\% & 86 & 174 & $2.03\times$ \\
+\midrule
+LLaMA-3.1-8B & W4A4KV4 70\% & 64 & 142 & $2.21\times$ \\
+ & W4A4KV4 pairwise 4:8 & 102 & 218 & $2.13\times$ \\
+ & W2A16 g128 50\% & 102 & 219 & $2.15\times$ \\
+\midrule
+LLaMA-2-13B & W4A4KV4 70\% & 134 & 299 & $2.22\times$ \\
+ & W4A4KV4 pairwise 4:8 & 225 & 464 & $2.07\times$ \\
+ & W2A16 g128 50\% & 220 & 464 & $2.11\times$ \\
 \bottomrule
 \end{tabular}

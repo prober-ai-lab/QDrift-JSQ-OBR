@@ -48,8 +48,11 @@ GPTQ and the mask score all run unchanged. Setting $(\alpha,\gamma)=(0,0)$ gives
   steps, which run unchanged.</em></sub>
 </p>
 
-One global $(\alpha,\gamma)$ is chosen per setting on WikiText-2 *validation* perplexity, from a
-grid that contains OBR. On that criterion QDrift is therefore never worse than OBR.
+The weights are derived per layer group from calibration statistics, with no search. The asymmetric
+weight is a trust region, $\alpha_\ell=\sqrt{\varepsilon_\ell/(s_\ell+\varepsilon_\ell)}$, and the clean
+weight is $\gamma_\ell=(1-\alpha_\ell)\lambda^*_\ell$, where $\lambda^*_\ell$ is the Ledoit–Wolf shrinkage
+intensity. One compression costs about twice OBR's. A fixed global $(\alpha,\gamma)$ grid remains
+available (`--mix-rule fixed`) and is compared on LLaMA-2-7B.
 
 A second, independent contribution is an **exact block-sequential selection of pairwise 4:8
 masks**, the only sparse layout that INT4 sparse tensor cores execute. It costs the same as GPTQ.
@@ -59,20 +62,21 @@ masks**, the only sparse layout that INT4 sparse tensor cores execute. It costs 
 WikiText-2 test perplexity (lower is better). Calibration is 128 × 1024 tokens from WikiText-2,
 with a SparseGPT mask and GPTQ on the late half:
 
-| Model | Setting | OBR | QDrift | $(\alpha,\gamma)$ |
+| Model | Setting | OBR | QDrift | mean $(\alpha,\gamma)$ |
 |---|---|---:|---:|:---:|
-| LLaMA-2-7B | W4A4KV4, 70% unstructured | 35.18 | **23.30** (−33.8%) | (0.25, 0) |
-| LLaMA-2-7B | W2A16 g128, 50% unstructured | 30.55 | **9.24** (−69.8%) | (0.5, 0) |
-| LLaMA-2-7B | W4A4KV4, pairwise 4:8 (exact mask) | 18.63 | **16.15** (−13.3%) | (0.25, 0.25) |
-| LLaMA-3.1-8B | W2A16 g128, 50% unstructured | 22.59 | **15.97** (−29.3%) | (0.25, 0.25) |
-| LLaMA-2-13B | W2A16 g128, 50% unstructured | 11.01 | **7.92** (−28.0%) | (0.25, 0.25) |
+| LLaMA-2-7B | W4A4KV4, 70% unstructured | 35.18 | **26.53** (−24.6%) | (0.47, 0.01) |
+| LLaMA-2-7B | W2A16 g128, 50% unstructured | 30.55 | **10.23** (−66.5%) | (0.53, 0.01) |
+| LLaMA-2-7B | W4A4KV4, pairwise 4:8 (exact mask) | 18.63 | **16.34** (−12.3%) | (0.63, 0.02) |
+| LLaMA-3.1-8B | W2A16 g128, 50% unstructured | 22.59 | **18.06** (−20.0%) | (0.49, 0.01) |
+| LLaMA-2-13B | W4A4KV4, 70% unstructured | 23.50 | **21.36** (−9.1%) | (0.43, 0.01) |
+| LLaMA-2-13B | W2A16 g128, 50% unstructured | 11.01 | **8.10** (−26.4%) | (0.55, 0.01) |
 
 - **Mask.** On LLaMA-2-7B the exact pairwise mask alone lowers OBR's perplexity from 21.42 to
   18.63.
 - **Kernels.** On an RTX 4090, the pairwise 4:8 sparse INT4 GEMM is 1.14–1.34× faster than dense
   INT4 at prefill and 1.87–3.05× faster at decode.
-- **Zero-shot.** The gains carry over clearly at two-bit weights. Elsewhere they are roughly
-  accuracy-neutral.
+- **Zero-shot.** At two-bit weights QDrift raises the average accuracy on LLaMA-2-7B and
+  LLaMA-2-13B. At W4A4KV4 50% OBR has the higher average on all three models.
 
 <p align="center">
   <img src="figs/png/results__mixture_grid__llama2-7b__alpha-profiles.png" width="46%"
