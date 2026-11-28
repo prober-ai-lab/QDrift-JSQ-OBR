@@ -171,13 +171,14 @@ def delta_vs_obr(record: dict, obr: dict) -> float:
     return 100.0 * (record["ppl"]["wikitext2"] - obr["ppl"]["wikitext2"]) / obr["ppl"]["wikitext2"]
 
 
-def qdrift_cell(record: dict, obr: dict) -> str:
-    """Bold ``test (val)`` with the test-relative delta as a subscript.
+def qdrift_cell(record: dict, obr: dict, bold: bool = True) -> str:
+    """``test (val)`` (bold when ``bold``) with the test-relative delta as a subscript.
 
     The delta is written in parentheses so it reads ``7.37 (7.47)`` with a
     small ``(-4.8%)`` subscript, and never looks detached from the number.
     """
-    return r"\textbf{%s}$_{(%+.1f\%%)}$" % (ppl_cell(record), delta_vs_obr(record, obr))
+    text = r"\textbf{%s}" % ppl_cell(record) if bold else ppl_cell(record)
+    return r"%s$_{(%+.1f\%%)}$" % (text, delta_vs_obr(record, obr))
 
 
 def mean_sd(values: list[float]) -> tuple[float, float]:

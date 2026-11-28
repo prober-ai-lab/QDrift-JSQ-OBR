@@ -53,7 +53,8 @@ def main() -> None:
                 top = max(top, v)
                 ax.bar(x, v, width=width * 0.92, color=color,
                        label=label if i == 0 else None)
-        ax.set_xticks(range(len(models)), [P.MODEL_DISP[m] for m in models], fontsize=6)
+        ax.set_xticks(range(len(models)), [P.MODEL_DISP[m] for m in models], fontsize=5.5,
+                      rotation=15, ha="right", rotation_mode="anchor")
         ax.set_ylim(0, top * 1.12)
         ax.tick_params(axis="y", labelsize=6)
         ax.grid(axis="x", visible=False)

@@ -82,6 +82,10 @@ MAIN_SPEC = [
 ]
 
 
+def _bold_if(text: str, bold: bool) -> str:
+    return r"\textbf{%s}" % text if bold else text
+
+
 def main_results(runs) -> tuple[str, str]:
     blocks: dict[str, list[str]] = {}
     for model, bits, pattern in MAIN_SPEC:
@@ -97,9 +101,11 @@ def main_results(runs) -> tuple[str, str]:
         pairwise = pattern.startswith("4to8")
         setting = T.BITS_LABEL[bits] + _nm_label(pattern, " pairwise 4:8", " mixed 4:8")
         sparsity = "4:8" if pairwise else SPARSITY_DISP[pattern]
+        better = "qd" if qd["ppl"]["wikitext2"] <= obr["ppl"]["wikitext2"] else "obr"
         row = " & ".join([
             MODEL_DISP[model], setting, sparsity,
-            T.ppl_cell(obr), T.qdrift_cell(qd, obr), _mean_mix_cell(qd),
+            _bold_if(T.ppl_cell(obr), better == "obr"),
+            T.qdrift_cell(qd, obr, bold=better == "qd"), _mean_mix_cell(qd),
         ])
         blocks.setdefault(model, []).append(row)
     header = r"Model & Setting & Sparsity & OBR & QDrift & mean $(\alpha,\gamma)$"
