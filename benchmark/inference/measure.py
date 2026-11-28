@@ -118,8 +118,12 @@ def measure_e2e(model, cfg: BenchConfig) -> dict:
         for _ in range(cfg.decode_steps):
             model.decode(next_ids, cache)
 
-    # Eager warmup: initialize cuBLAS, CUTLASS, Marlin and SDPA handles.
+    # Eager warmup: initialize cuBLAS, CUTLASS, Marlin and SDPA handles.  Each cache
+    # is dropped before the next is allocated, so two never coexist (a batch-16 FP16
+    # KV cache is several GB).
+    cache = None
     for _ in range(cfg.warmup):
+        cache = None
         cache = new_cache()
         run_prefill(cache)
         run_decode(cache)
@@ -131,6 +135,7 @@ def measure_e2e(model, cfg: BenchConfig) -> dict:
     if cfg.cuda_graph:
         try:
             torch.cuda.synchronize()
+            cache = None
             graph_cache = new_cache()
             g_prefill = torch.cuda.CUDAGraph()
             with torch.cuda.graph(g_prefill):
@@ -181,6 +186,7 @@ def measure_e2e(model, cfg: BenchConfig) -> dict:
             e2e_times.append(prefill_ms + decode_ms)
     else:
         for _ in range(cfg.trials):
+            cache = None
             cache = new_cache()
             start, end = _event_pair()
             start.record()
