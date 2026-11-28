@@ -10,7 +10,7 @@ inference runtime (``benchmark.inference``) and writes
 ``results/benchmarks/formats__<model>__<format>__b<batch>.json``.
 
     python -m benchmark.inference.formats --checkpoint checkpoints/v2/<run>.safetensors \
-        --format w4a4-4to8p --batch 1 --prefill 2048 --decode 128
+        --format w4a4-4to8p --batch 1 --prefill 2048 --decode 24
     python -m benchmark.inference.formats --checkpoint <any v2 checkpoint of the model> \
         --format fp16 --batch 1
 """
@@ -98,6 +98,10 @@ def run(args: argparse.Namespace) -> dict:
         cuda_graph=args.cuda_graph,
     )
     measured = measure_e2e(model, cfg)
+    if args.cuda_graph and measured["timing_mode"] != "cuda_graph":
+        # Eager timing is launch-bound (4-5x slower decode for the quantized
+        # kernels) and is not comparable across formats: never record it.
+        raise SystemExit("CUDA-graph capture failed; refusing to record eager timing")
     return {
         "model": recipe.model,
         "format": args.format,
@@ -121,7 +125,10 @@ def main() -> int:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--prefill", type=int, default=2048)
-    parser.add_argument("--decode", type=int, default=128)
+    # Decode steps are captured as one CUDA graph, one kernel node set per step; the
+    # driver caps live graph nodes per process (~360k simple nodes on the 4090s), which
+    # LLaMA-2-13B pairwise W4A4 reaches at ~34 steps.  24 steps fit every model and format.
+    parser.add_argument("--decode", type=int, default=24)
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--trials", type=int, default=10)
     parser.add_argument("--cuda-graph", action=argparse.BooleanOptionalAction, default=True)
