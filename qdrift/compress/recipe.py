@@ -316,7 +316,7 @@ MIX_MODULES = {
     "mlp_out": ("mlp.down_proj",),
 }
 # Mixture-weight rules (``CompensationSpec.mix_rule``).
-MIX_RULES = ("fixed", "auto")
+MIX_RULES = ("fixed", "auto", "prec")
 _BLOCK_RE = re.compile(r"layers\.(\d+)\.")
 
 
@@ -348,6 +348,8 @@ class CompensationSpec:
     Ledoit-Wolf shrinkage of ``H_Xhat`` toward ``H_X`` on the remaining ``1 - alpha``.  ``mix_asym`` /
     ``mix_clean`` are then ignored; ``mix_table`` holds the derived
     ``(name, alpha, gamma)`` rows and is filled by the pipeline, never by hand.
+    ``mix_rule`` ``prec`` uses the same statistics with ``alpha = eps / (s + eps)``
+    (qdrift.obr.drift.precision_weight).
     """
 
     method: str = "obr"

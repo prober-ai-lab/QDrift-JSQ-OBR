@@ -308,3 +308,39 @@ def test_cli_defaults_to_auto() -> None:
     for flags in (("--mix-asym", "1"), ("--mix-clean", "0"), ("--mix-blocks", "0-3"), ("--mix-modules", "attn")):
         with pytest.raises(SystemExit):
             _cli_recipe("--comp", "drift", *flags)
+
+
+def test_precision_rule(monkeypatch) -> None:
+    """``prec``: alpha = eps / (s + eps) on the auto rule's own statistics, its
+    own run tag, and the same validation as ``auto``."""
+    from qdrift.obr.drift import precision_weight, trust_region_weight
+
+    assert precision_weight(0.0, 1.0) == 1.0
+    assert precision_weight(1.0, 0.0) == 0.0
+    assert precision_weight(3.0, 1.0) == pytest.approx(0.25)
+    for s, e in ((0.45, 0.03), (987.6, 416.6), (5.3, 0.26)):
+        assert precision_weight(s, e) == pytest.approx(trust_region_weight(s, e) ** 2)
+    prec = _cli_recipe("--comp", "drift", "--mix-rule", "prec")
+    assert run_name(prec).endswith("_qdrift-prec_seed42")
+    with pytest.raises(SystemExit):
+        _cli_recipe("--comp", "drift", "--mix-rule", "prec", "--mix-asym", "0.25")
+    monkeypatch.setattr(P.torch.cuda, "set_device", lambda device: None)
+    x, z = _inputs(rows=512, cols=64, seed=11)
+    generator = torch.Generator().manual_seed(2)
+
+    class _Layer:
+        def __init__(self, rows):
+            self.weight = type("W", (), {"data": torch.randn(rows, 64, generator=generator)})()
+
+    layers = {"a": _Layer(16), "b": _Layer(8)}
+    qparams = qrange(4, "midtread")
+    mixes = {}
+    for rule in ("auto", "prec"):
+        recipe = _layer_recipe(CompensationSpec(method="drift", mix_rule=rule))
+        mixes[rule] = P._auto_mix(recipe, qparams, ["a", "b"], layers, x, z, "cpu")
+    (a_auto, _), info_auto = mixes["auto"]
+    (a_prec, g_prec), info_prec = mixes["prec"]
+    assert info_prec["cancellable"] == pytest.approx(info_auto["cancellable"])
+    assert info_prec["error"] == pytest.approx(info_auto["error"])
+    assert a_prec == pytest.approx(a_auto ** 2)
+    assert g_prec == pytest.approx((1 - a_prec) * info_prec["intensity"])

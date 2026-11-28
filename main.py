@@ -86,7 +86,7 @@ def _add_recipe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--mix-clean", type=float, default=None, help="drift, --mix-rule fixed: weight gamma of the clean-input target E||W_hat X - W X||^2; the symmetric target gets 1 - alpha - gamma (default 0; 0, 0 = OBR)")
     parser.add_argument("--mix-blocks", type=_block_range, default=None, help="drift, --mix-rule fixed: apply the mixture only to decoder blocks FIRST-LAST (inclusive); OBR (0, 0) elsewhere. Localization ablation")
     parser.add_argument("--mix-modules", choices=("all", "attn", "mlp_in", "mlp_out"), default="all", help="drift, --mix-rule fixed: apply the mixture only to attn (q/k/v/o), mlp_in (gate/up) or mlp_out (down); OBR (0, 0) elsewhere")
-    parser.add_argument("--mix-rule", choices=("fixed", "auto"), default=None, help="drift: auto (default) = derive each layer group's (alpha, gamma) from its calibration statistics (docs/mix-auto.md); fixed = the global --mix-asym/--mix-clean (grid and ablations)")
+    parser.add_argument("--mix-rule", choices=("fixed", "auto", "prec"), default=None, help="drift: auto (default) = derive each layer group's (alpha, gamma) from its calibration statistics (docs/mix-auto.md); prec = the same statistics with alpha = eps / (s + eps); fixed = the global --mix-asym/--mix-clean (grid and ablations)")
     parser.add_argument("--rotation", choices=("hadamard", "none"), default="hadamard", help="hadamard=fast global Hadamard; none=identity")
     parser.add_argument("--nsamples", type=int, default=128)
     parser.add_argument("--seqlen", type=int, default=2048)
@@ -142,7 +142,7 @@ def _mixture(args: argparse.Namespace) -> dict:
         or args.mix_blocks is not None or args.mix_modules != "all"
     )
     rule = args.mix_rule or ("auto" if args.comp == "drift" else "fixed")
-    if rule == "auto" and explicit:
+    if rule != "fixed" and explicit:
         raise SystemExit("--mix-asym/--mix-clean/--mix-blocks/--mix-modules need --mix-rule fixed")
     return {
         "mix_asym": 1.0 if args.mix_asym is None else args.mix_asym,

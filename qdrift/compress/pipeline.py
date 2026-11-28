@@ -54,6 +54,7 @@ from qdrift.obr.drift import (
     drift_weight,
     ledoit_wolf_intensity,
     mixture_hessians,
+    precision_weight,
     trust_region_weight,
 )
 from qdrift.obr.obr import compensate_pruning_error, split_mask
@@ -186,7 +187,8 @@ def _auto_mix(
             (projected.t() * torch.cholesky_solve(projected.t(), factor)).sum()
         )
         del solved, dense, delta, projected
-    alpha = trust_region_weight(cancellable, error)
+    weight_rule = precision_weight if comp.mix_rule == "prec" else trust_region_weight
+    alpha = weight_rule(cancellable, error)
     mix = auto_mixture(alpha, intensity)
     del hessian, diff, factor
     torch.cuda.empty_cache()
@@ -973,7 +975,7 @@ def compress(
             )
             auto_meta.update({n: info for n in names})
             print(
-                f"mix-auto {','.join(names)} alpha={info['alpha']:.4f} "
+                f"mix-{recipe.compensation.mix_rule} {','.join(names)} alpha={info['alpha']:.4f} "
                 f"beta={info['beta']:.4f} gamma={info['gamma']:.4f} "
                 f"s={info['cancellable']:.4g} eps={info['error']:.4g} "
                 f"lw={info['intensity']:.4f}",

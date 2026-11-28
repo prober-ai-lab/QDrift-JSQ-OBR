@@ -31,6 +31,7 @@ __all__ = [
     "drift_weight",
     "ledoit_wolf_intensity",
     "mixture_hessians",
+    "precision_weight",
     "trust_region_weight",
 ]
 
@@ -74,6 +75,20 @@ def trust_region_weight(cancellable: float, error: float) -> float:
     if error <= 0.0:
         return 0.0
     return math.sqrt(error / (cancellable + error))
+
+
+def precision_weight(cancellable: float, error: float) -> float:
+    """alpha = eps / (s + eps) (``--mix-rule prec``): each of the two targets
+    weighted by the inverse of its cost, the asymmetric target's ``s`` (how
+    far its drift correction moves the layer output, ``tr(W D H^-1 D^T W^T)``)
+    and the symmetric target's ``eps`` (the error ``tr(E H E^T)`` of OBR's
+    solution).  A stated rule, chosen for its behaviour; it is the square of
+    :func:`trust_region_weight`.  No drift (``s = 0``) gives 1."""
+    if cancellable <= 0.0:
+        return 1.0
+    if error <= 0.0:
+        return 0.0
+    return error / (cancellable + error)
 
 
 def ledoit_wolf_intensity(
